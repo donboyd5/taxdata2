@@ -1,0 +1,95 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# PUF Preparation
+
+
+```{r}
+#| label: setup
+#| eval: true
+#| include: false
+#| echo: false
+
+source(here::here("r", "libraries.r"))
+# source(here::here("r", "functions.r"))
+# source(here::here("r", "constants.r"))
+
+dir <- r"(E:\data\puf_files\puf2015)"
+
+```
+
+
+## Read raw PUF csv file
+
+```{r}
+#| label: get-puf
+#| eval: false
+#| include: false
+#| echo: false
+
+fn <- "puf_2015.csv"
+
+df <- vroom::vroom(fs::path(dir, fn)) # ~3 seconds
+
+glimpse(df)
+skimdf <- skim(df) # takes about 13 secs so save he results
+saveRDS(skimdf, here::here("data", "skimdf.rds"))
+
+df2 <- df |> 
+  btools::lcnames() |> 
+  dplyr::mutate(weight=s006 / 100)
+ns(df2)
+
+arrow::write_parquet(df2, fs::path(dir, "puf_2015.parquet"))
+# dfa <- arrow::read_parquet(fs::path(dir, "puf_2015.parquet")) # 0.22 seconds
+
+```
+
+
+## Weighted number of returns by AGI range (AGR1)
+
+Make sure we have the right number of weighted returns by AGI range. The table below compares weighted number of returns calculated from the PUF, by AGI income range, to expected number of weighted returns as reported on pages 37-38 of the PUF documenation.
+
+```{r}
+#| label: agiranges
+#| eval: true
+#| include: true
+#| echo: false
+
+dfa <- arrow::read_parquet(fs::path(dir, "puf_2015.parquet"))
+agiranges <- base::readRDS(here::here("data", "documentation", "pufdoc_agiranges.rds"))
+wdf <- readRDS(here::here("data", "documentation", "pufdoc_wtdcounts.rds"))
+
+df <- dfa |> 
+  dplyr::select(agir1, pufcalc=weight) |> 
+  dplyr::summarise(pufcalc=sum(pufcalc), .by=agir1) |> 
+  dplyr::left_join(agiranges,
+            by = join_by(agir1)) |> 
+  dplyr::left_join(wdf |> dplyr::select(agir1, pufexpected=puf),
+            by = join_by(agir1)) |> 
+  dplyr::select(agir1, agirange, pufexpected, pufcalc) |> 
+  dplyr::mutate(diff=pufcalc - pufexpected, pctdiff=diff / pufexpected) |> 
+  arrange(agir1)
+
+
+DT::datatable(df,
+              filter = list(position = 'top'),
+              options =list(pageLength = 40,
+                            scrollY = "600px",
+                            scrollCollapse ="true",
+                            paging="false")) |> 
+  DT::formatRound(columns = c("pufexpected", "pufcalc", "diff"), digits = 0, interval = 3, mark = ',') |> 
+  DT::formatPercentage(columns ="pctdiff", digits = 2, interval = 3, mark = ',')
+
+
+
+```
+
+
+
+## Compare selected items to Table A from p.30 of PUF Booklet
+
+![](images/ScreenHunter_3230 Aug. 15 18.41.png)

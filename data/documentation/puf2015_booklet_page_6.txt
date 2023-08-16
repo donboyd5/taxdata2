@@ -1,0 +1,34 @@
+INCOME
+1, E00200, Salaries and wages
+2, E00300, Interest received
+3, E00400, Tax-exempt interest income
+4, E00600, Dividends included in AGI
+5, E00650, Qualified Dividends
+6, E00700, State income tax refunds
+7, E00800, Alimony received
+8, E00900, Business or profession (Schedule C) net profit/loss (+/-)
+9, E01000, Net capital gain or loss (+/-)
+10, E01100, Capital gain distributions reported on Form 1040
+11, E01200, Other gains (or loss) (+/-)
+12, E01400, Taxable IRA distribution
+13, E01500, Total pensions and annuities received
+14, E01700, Pensions and annuities included in AGI
+15, E02000, Schedule E net income or loss (+/-)
+16, E02100, Schedule F net profit/loss (+/-)
+17, E02300, Unemployment compensation in AGI
+18, E02400, Gross Social Security benefits
+19, E02500, Social Security benefits in AGI
+Statutory 
+20, E03150, Total deductible individual retirement account (IRA) payments Adjustments
+21, E03210, Student Loan Interest Deduction
+22, E03220, Educator Expenses
+23, E03230, Tuition and Fees Deduction
+24, E03260, Deduction for self-employment tax
+25, E03270, Self-employed health insurance deduction
+26, E03240, Domestic Production Activities deduction
+27, E03290, Health Savings Account deduction
+28, E03300, Payments to KEOGH accounts
+29, E03400, Forfeited interest penalty
+30, E03500, Alimony paid
+AGI
+31, E00100, Adjusted Gross Income (deficit) (AGI) (+/-)

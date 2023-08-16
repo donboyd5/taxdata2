@@ -1,0 +1,5 @@
+# Introduction
+
+Summary of approach and how it differs from current taxdata approach.
+
+See @knuth84 for additional discussion of literate programming.

@@ -1,0 +1,85 @@
+---
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+# Appendix
+
+## taxdata structure and methods
+
+### Overview
+
+This section summarizes the key elements of [taxdata](https://github.com/PSLmodels/taxdata) as they relate to the PUF. The [makefile](https://github.com/PSLmodels/taxdata/blob/master/Makefile) (commit c902598) gives the overall structure. According to chatGPT's interpretation of the makefile (I am not an expert), the order of execution for make-puf-files is:
+
+1.  **`data/cps-matched-puf.csv`**: This target depends on several Python scripts.
+
+    -   Executes: **`python createpuf.py`**
+
+2.  **`puf_stage1/Stage_I_factors.csv`**: Depends on various data files and the **`stage1.py`** script.
+
+    -   Executes: **`cd puf_stage1 ; python stage1.py`**
+
+3.  **`puf_stage1/growfactors.csv`**: This target depends on **`puf_stage1/Stage_I_factors.csv`** and other data files. Since **`puf_stage1/Stage_I_factors.csv`** is generated in the previous step, it's already taken care of.
+
+    -   Executes: **`cd puf_stage1 ; python factors_finalprep.py`**
+
+4.  **`puf_stage2/puf_weights.csv.gz`**: This target depends on **`data/cps-matched-puf.csv`**, **`puf_stage1/Stage_I_factors.csv`**, and other files. Both **`data/cps-matched-puf.csv`** and **`puf_stage1/Stage_I_factors.csv`** have already been generated in the previous steps.
+
+    -   Executes: **`cd puf_stage2 ; python stage2.py && gunzip puf_weights.csv.gz && gzip -n puf_weights.csv`**
+
+5.  **`puf_stage3/puf_ratios.csv`**: Depends on the previously generated files (**`data/cps-matched-puf.csv`**, **`puf_stage1/growfactors.csv`**, and **`puf_stage2/puf_weights.csv.gz`**) and others.
+
+    -   Executes: **`cd puf_stage3 ; python stage3.py`**
+
+### data/cps-matched-puf.csv
+
+[createpuf.py](https://github.com/PSLmodels/taxdata/blob/master/createpuf.py), commit 8ba8ec7
+
+#### Overview
+
+Here's chatGPT's overview of what createpuf.py does:
+
+This Python program revolves around the preparation, processing, and merging of tax data from two main sources: the Current Population Survey (CPS) and the Public Use File (PUF).
+
+Initially, it loads the tax data from these sources, applies transformations, and preps them for a subsequent matching process. For instance, it adjusts specific income variables, computes new columns such as total personal income (`tpi`), wage and capital income shares, and sets up specific flags for sources of income. The `dataprep` function encapsulates many of these transformations.
+
+The core activity is the statistical matching of CPS and PUF tax units based on predefined variables, ensuring that these tax units align correctly. After the match, the program merges the matched data and appends tax units from the CPS that didn't file taxes (non-filers). Lastly, the merged dataset undergoes a final preparation step before being exported as two distinct CSV files, one containing the raw merged data and the other a cleaned version.
+
+#### Details
+
+Here's my interpretation:
+
+-   Use CPS_YEAR = 2016 PUF_YEAR = 2011
+
+-   create cps tax units via [cps.create()](https://github.com/PSLmodels/taxdata/blob/master/taxdata/cps/create.py) (commit 386ce3f)
+
+    -   look for C-TAM imputed benefits; if not available for {year} use benefits reported in the CPS
+
+    -   get the "asec" + str(year) + "\_pubuse.dat" file
+
+    -   the function [pycps()](https://github.com/PSLmodels/taxdata/blob/master/taxdata/cps/pycps.py) (commit 773634e) creates tax units
+
+        -   uses the class [TaxUnit](https://github.com/PSLmodels/taxdata/blob/master/taxdata/cps/taxunit.py) commit a50f61c
+
+        -   the first create_units() function does the work
+
+-   minor puf prep via puf.preppuf()
+
+-   cps:
+
+    -   rename cps variables to align with puf variables
+
+    -   Split charitable contributions into cash (e19800) and non-cash (e20100) using ratio in PUF (cash = 0.82013) \[same ratios for all records\]
+
+-   run dataprep() on cps and on puf
+
+-   cps:
+
+    -   drop benefit variables
+
+    -   save raw file
+
+    -   split cps into filers and non-filers
+
+-   statistical match: run statmatch.match()

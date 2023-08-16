@@ -1,0 +1,219 @@
+---
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+# Get selected tables from documentation
+
+## PUF 2015 documentation
+
+```{r}
+#| label: setup
+#| eval: true
+#| include: false
+#| echo: false
+
+source(here::here("r", "libraries.r"))
+# source(here::here("r", "functions.r"))
+# source(here::here("r", "constants.r"))
+
+
+```
+
+
+```{r}
+#| label: get-tables
+#| eval: false
+#| include: false
+#| echo: false
+
+# Get puf documentation tables, and save for later because it can take a while to get them
+
+# Read the PDF file
+# pfn <- r"(E:\data\puf_files\puf2015\2015 Public Use Booklet.pdf)"
+# tab1 <- extract_tables(pfn, pages=8)
+pfn <- here::here("data", "documentation", "2015 Public Use Booklet.pdf")
+tables <- extract_tables(pfn)
+
+saveRDS(tables, here::here("data", "documentation", "pufdoc_tables.rds"))
+
+
+```
+
+
+
+### Variable names and descriptions
+
+Get the table of variable names found on pages 6-10 of the documentation booklet.
+
+```{r}
+#| label: get-vnames
+#| eval: false
+#| include: false
+#| echo: false
+
+tables <- readRDS(here::here("data", "documentation", "pufdoc_tables.rds"))
+
+# get the table of variable names
+
+# the first page of that table, on page 6, is not easily extracted automatically so I copy-pasted it into a file
+fpath <- here::here("data", "documentation", "puf2015_booklet_page_6.txt")
+p6a <- readr::read_csv(fpath, col_names=FALSE) # read everything into a single column
+p6b <- p6a |> 
+  tidyr::separate_wider_delim(cols=X1, delim=",", names=c("vnum", "vname", "vlabel"), too_few = "align_start") |> 
+  dplyr::mutate(across(c(vname, vname, vlabel), str_trim),
+                category=ifelse(is.na(as.numeric(vnum)), vnum, NA_character_),
+                vnum=as.numeric(vnum)) |> 
+  dplyr::relocate(category)
+p6b
+
+# pages 7-10 were automatically extracted into items 1-4
+f <- function(tabnum){
+  tab <- tables[tabnum][[1]] |> 
+    tibble::as_tibble(.name_repair="minimal") |> 
+    stats::setNames(c("category", "vnum", "vname", "vlabel")) |> 
+    dplyr::mutate(vnum=as.numeric(vnum))
+}
+p710 <-purrr::map(1:4, f) |> 
+  purrr::list_rbind() |> 
+  dplyr::mutate(category=dplyr::case_when(category=="Tax" ~ "Tax Computation",
+                                          category=="Computation" ~ NA_character_,
+                                          category=="" ~ NA_character_,
+                                          TRUE ~ category))
+vnames <- list_rbind(list(p6b, p710)) |> 
+  tidyr::fill(category) |> 
+  dplyr::filter(!is.na(vnum))
+
+saveRDS(vnames, here::here("data", "documentation", "vnames.rds"))
+
+```
+
+
+```{r}
+#| label: show-vnames
+#| eval: true
+#| include: true
+#| echo: false
+
+vnames <- base::readRDS(here::here("data", "documentation", "vnames.rds"))
+
+DT::datatable(vnames, 
+              filter = list(position = 'top'),
+              options =list(pageLength = 40,
+                            scrollY = "600px",
+                            scrollCollapse ="true",
+                            paging="false"))
+
+```
+
+
+### AGI ranges
+
+Get the AGI ranges associated with the PUF variable AGIR1, on pages 11-12 of the PUF booklet.
+
+```{r}
+#| label: get-agi-ranges
+#| eval: false
+#| include: false
+#| echo: false
+
+fn <- "puf2015_booklet_pages_4_5.txt"
+
+fpath <- here::here("data", "documentation", fn)
+df1 <- readr::read_lines(fpath) # read everything into a string vector
+
+df2 <- tibble::tibble(x=df1) |> 
+  dplyr::mutate(agir1=btools::str_extract_after_last(x, "..") |> as.integer(),
+         agirange=btools::str_extract_before_first(x, "..") |> stringr::str_trim()) |> 
+  dplyr::select(-x)
+
+saveRDS(df2, here::here("data", "documentation", "pufdoc_agiranges.rds"))
+
+```
+
+
+```{r}
+#| label: show-agiranges
+#| eval: true
+#| include: true
+#| echo: false
+
+agiranges <- base::readRDS(here::here("data", "documentation", "pufdoc_agiranges.rds"))
+
+DT::datatable(agiranges, 
+              filter = list(position = 'top'),
+              options =list(pageLength = 40,
+                            scrollY = "600px",
+                            scrollCollapse ="true",
+                            paging="false"))
+
+```
+
+
+### Expected number of weighted returns by AGI range, and comparison to full sample
+
+From pages 37-38 of the PUF documenation.
+
+
+```{r}
+#| label: get-return-counts
+#| eval: false
+#| include: false
+#| echo: false
+
+# weighted return counts are in tables 16 and 17 (rows 1-6)
+tables[[17]]
+
+rbind(tables[[16]], tables[[17]])
+
+part1 <- tables[16][[1]] |>
+  tibble::as_tibble(.name_repair="unique") |> 
+  dplyr::filter(row_number() >= 4) |> 
+  dplyr::select(-...2) |> 
+  stats::setNames(c("agir1", "fullsample", "puf", "diff", "pctdiff"))
+
+part2 <- tables[17][[1]] |>
+  tibble::as_tibble(.name_repair="unique") |> 
+  dplyr::filter(row_number() %in% 3:6) |> 
+  stats::setNames(c("agir1", "fullsample", "puf", "diff", "pctdiff"))
+
+wdf <- bind_rows(part1, part2) |> 
+  mutate(agir1=as.integer(agir1),
+         across(c(fullsample, puf, diff, pctdiff),
+                readr::parse_number),
+         pctdiff=pctdiff / 100)
+
+saveRDS(wdf, here::here("data", "documentation", "pufdoc_wtdcounts.rds"))
+
+```
+
+
+```{r}
+#| label: show-wtdcounts
+#| eval: true
+#| include: true
+#| echo: false
+
+wdf <- readRDS(here::here("data", "documentation", "pufdoc_wtdcounts.rds"))
+
+agiranges <- base::readRDS(here::here("data", "documentation", "pufdoc_agiranges.rds"))
+
+df <- wdf |> 
+  dplyr::left_join(agiranges,
+                   by = join_by(agir1)) |> 
+  dplyr::relocate(agirange, .after=agir1)
+
+DT::datatable(df, 
+              filter = list(position = 'top'),
+              options =list(pageLength = 40,
+                            scrollY = "600px",
+                            scrollCollapse ="true",
+                            paging="false")) |> 
+  DT::formatRound(columns = c("fullsample", "puf", "diff"), digits = 0, interval = 3, mark = ',') |> 
+  DT::formatPercentage(columns = "pctdiff", digits = 2, interval = 3, mark = ',')
+
+
+
+```
+

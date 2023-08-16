@@ -1,0 +1,69 @@
+project:
+  type: book
+
+book:
+  title: "taxdata2"
+  author: "Don Boyd"
+  date: today
+  date-format: long
+  chapters:
+    - index.qmd
+    - part: "Data preparation"
+      chapters:
+      - intro.qmd
+      - parse_pufdocs.qmd
+      - puf_prep.qmd
+    - part: "Wrap-up"
+      chapters:
+      - summary.qmd
+      - references.qmd
+    - part: "Appendix"
+      chapters: 
+        - appendix.qmd
+    
+bibliography: references.bib
+
+format:
+  html:
+    theme: cosmo
+  # pdf:
+  #   documentclass: scrreprt
+
+# editor: console
+
+editor_options:
+  chunk_output_type: console
+
+execute:
+  eval: true
+  echo: false
+  error: false
+  warning: false
+  message: false  # not sure if allowed
+  note: false  # not sure if allowed
+  freeze: auto  # during global project renders, re-render only when source changes
+  
+  
+# renv-related commands
+# renv::snapshot()
+# renv::restore()
+# renv::update()
+# renv::status()
+# Sys.getenv("RENV_PATHS_CELLAR") # RENV_PATHS_SOURCE RENV_PATHS_RENV
+  
+  
+# useful reminders of quarto commands:
+# quarto publish netlify --no-render
+# quarto publish netlify --no-browser --no-prompt
+# quarto publish netlify --no-render --no-browser --no-prompt  
+  
+  
+# possibly use this at start of each doc??
+# ---
+# output: html_document
+# editor_options: 
+#   chunk_output_type: console
+# ---
+
+  
+  
