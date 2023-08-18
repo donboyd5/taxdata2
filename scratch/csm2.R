@@ -188,15 +188,15 @@ DataFrame matchrecs(DataFrame adf, DataFrame bdf) {
 }
 ')
 
-df <- matchrecs(adf, bdf)
-sum(df$weighta)
-sum(df$weightb)
+# df <- matchrecs(adf, bdf)
+# sum(df$weighta)
+# sum(df$weightb)
 
 # now do it with real data -----
 
 set.seed(123)
 dfb <- dfa |> 
-  sample_n(1000) |> 
+  sample_n(10000) |> 
   select(recid, weight, agi=e00100, wages=e00200, interest=e00300, dividends=e00600, businc=e00900, capgains=e01000, socsec=e02400)
 dfb
 
@@ -239,6 +239,51 @@ df <- matchrecs(adf, bdf)
 sum(df$weighta)
 sum(df$weightb)
 glimpse(df)
+
+# check - are all weight sums correct?
+checka <- df |> 
+  summarise(weighta=sum(weighta),
+            weightb=sum(weightb),
+            n=n(),
+            .by=ida)
+adf |> 
+  left_join(checka |> select(ida, acalc=weighta, n), by = join_by(ida)) |> 
+  mutate(diff=acalc - weighta) |> 
+  arrange(desc(abs(diff)))
+
+checkb <- df |> 
+  summarise(weighta=sum(weighta),
+            weightb=sum(weightb),
+            n=n(),
+            .by=idb)
+bdf |> 
+  left_join(checkb |> select(idb, bcalc=weightb, n), by = join_by(idb)) |> 
+  mutate(diff=bcalc - weightb) |> 
+  arrange(desc(abs(diff)))
+
+abfile <- df |> 
+  left_join(afile2 |> 
+              select(ida=recid, !!xvars, !!yvars),
+            by = join_by(ida)) |> 
+  left_join(bfile2 |> 
+              select(idb=recid, !!zvars),
+            by = join_by(idb))
+
+abfile |> 
+  # this has the afile versions of the xvars, which won't be same as the bfile versions
+  # but sums of yvars and zvars hit the targets!
+  summarise(across(c(agi:dividends),
+                 ~ sum(.x * weighta)))
+afile2 |> 
+  summarise(across(c(agi:businc),
+                   ~ sum(.x * weight)))
+
+bfile2 |> 
+  summarise(across(c(agi:dividends),
+                   ~ sum(.x * weight)))
+
+df <- df |> 
+  arrange(ida, idb)
 
 tmp <- count(df, ida, sort=TRUE)
 count(tmp, n)
