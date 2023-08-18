@@ -302,3 +302,40 @@ adf |>
 # }
 # ')
 
+
+# TPC approach -- my numbering
+# https://www.taxpolicycenter.org/sites/default/files/alfresco/publication-pdfs/411136-The-Urban-Brookings-Tax-Policy-Center-Microsimulation-Model.PDF
+# We implement predictive mean matching by using taxable income as the dependent variable and thus:
+
+# 1) run the following regression separately for each cell using the PUF data:
+#   Taxable Income = β0 + β1*(Dummy for the Aged Status) + β2*(Wages and Salaries) +
+#   β3*(Taxable Interest) + β4*(Dividend Income) + β5*(Business income or loss) + β6*(Farm
+#                                                                                     income or loss) + β7*(Schedule E Income) + β8*(Pensions) + β9*(Social Security Income) +
+#   β10*(Unemployment Compensation) + β12*(Alimony) + β13*(Wage Share of Total Income) +
+#   β14*(Capital Income Share of Total Income) + β15*(Dummy for Presence of Wage or Salary
+#                                                     Income) 
+
+# 2) calculate the fitted values of the Y and/or Z variables for
+# both the host and donor files. That is, the coefficients on the X variables that were obtained in the
+# regression using the host file, are then used to calculate fitted values for the Y and/or Z variables
+# in both the host and donor files. Specifically, in the case of the tax model, we use the coefficients
+# from the regression described above, along with the actual values of the explanatory variables in
+# each file, to construct fitted values for taxable income for each record in both the CPS and the
+# PUF. 
+
+# 3) , the weights on each CPS record are multiplied by a factor such that the total of the CPS
+# weights in each partitioned cell adds up to the total SOI weight for that partition
+
+# 4) the records in each cell would then be sorted in
+# descending order by the predicted values of one of the Y and/or Z variables. In the case of our tax
+# model match, the cells are sorted by the predicted values of taxable income. Corresponding
+# records from the PUF and the CPS are then matched within each partitioned cell. Of the two
+# records, the one with the higher weight must be split or duplicated and matched with the next
+# record or next several records in the other file until all of its weight has been “used up.” Thus,
+# each record in the host PUF file is matched to that record in the donor CPS file that is “closest”
+# in terms of having the most similar predicted value of taxable income among all records within
+# the partition. Since the weights on the CPS file have been adjusted to equal the total PUF
+# weights, all records are used in the match. One possible disadvantage of using all the records to
+# perform the match is that some records might be matched despite having a large difference
+# between the predicted values of taxable income in each of the files. 
+
