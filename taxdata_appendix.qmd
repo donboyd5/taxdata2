@@ -4,11 +4,9 @@ editor_options:
   chunk_output_type: console
 ---
 
-# Appendix
+# Appendix: Taxdata structure and methods
 
-## taxdata structure and methods
-
-### Overview
+## Overview
 
 This section summarizes the key elements of [taxdata](https://github.com/PSLmodels/taxdata) as they relate to the PUF. The [makefile](https://github.com/PSLmodels/taxdata/blob/master/Makefile) (commit c902598) gives the overall structure. According to chatGPT's interpretation of the makefile (I am not an expert), the order of execution for make-puf-files is:
 
@@ -32,11 +30,11 @@ This section summarizes the key elements of [taxdata](https://github.com/PSLmode
 
     -   Executes: **`cd puf_stage3 ; python stage3.py`**
 
-### data/cps-matched-puf.csv
+## data/cps-matched-puf.csv
 
 [createpuf.py](https://github.com/PSLmodels/taxdata/blob/master/createpuf.py), commit 8ba8ec7
 
-#### Overview
+### Overview
 
 Here's chatGPT's overview of what createpuf.py does:
 
@@ -46,7 +44,7 @@ Initially, it loads the tax data from these sources, applies transformations, an
 
 The core activity is the statistical matching of CPS and PUF tax units based on predefined variables, ensuring that these tax units align correctly. After the match, the program merges the matched data and appends tax units from the CPS that didn't file taxes (non-filers). Lastly, the merged dataset undergoes a final preparation step before being exported as two distinct CSV files, one containing the raw merged data and the other a cleaned version.
 
-#### Details
+### Details
 
 Here's my interpretation:
 
@@ -62,7 +60,36 @@ Here's my interpretation:
 
         -   uses the class [TaxUnit](https://github.com/PSLmodels/taxdata/blob/master/taxdata/cps/taxunit.py) commit a50f61c
 
-        -   the first create_units() function does the work
+        -   the first create_units() function does the work (a 2nd version of the function is unused). Here is chatGPT's summary of what create_units() does. I am not sure why it constructs units rather than using household relationships that are in the CPS. I'll ask Anderson about that if we end up doing statistical matching.
+
+> This Python function is designed to construct tax units (e.g., households for tax purposes) based on given input data. Here's a step-by-step breakdown:
+>
+> 1.  **Function Signature and Arguments**:
+>     -   `create_units(data, year, verbose=False, ctam_benefits=True)`:
+>         -   `data`: A list of person dictionaries containing their attributes.
+>         -   `year`: A year for which tax units are created.
+>         -   `verbose`: A flag to print out intermediate steps for debugging or tracking. Default is `False`.
+>         -   `ctam_benefits`: A flag to indicate if CTAM benefits are considered.
+> 2.  **Initial Steps**:
+>     -   The data is sorted by family position (`ffpos`) and family relationship (`a_famrel`). This helps ensure children are not treated as separate units before their parents.
+>     -   Total household income (`hh_inc`) is computed by summing up `tot_inc` across all people in the household.
+> 3.  **Creating Tax Units**:
+>     -   For each person in the data:
+>         -   If they aren't already flagged as part of a tax unit, they become the primary person (`p_flag`) in a new tax unit.
+>         -   If they have a spouse (`a_spouse`), the spouse is added to their tax unit.
+>         -   The function then loops through all people in the household to add eligible dependents (`is_dependent()`) to the tax unit.
+>         -   The newly created tax unit is then stored in the `units` dictionary with the key being the person's line number (`a_lineno`).
+> 4.  **Checking Dependent Filing Requirements**:
+>     -   The function then checks if any dependents in the units need to file their own taxes.
+>         -   This checks against various filing thresholds like earned income (`earn_thd`), unearned income (`unearn_thd`), and gross income (`gross_thd`).
+>         -   If a dependent meets any of the thresholds, they are removed from the tax unit that was claiming them and made into their own tax unit.
+>         -   If a dependent has a status indicating they didn't file, they aren't forced to file.
+> 5.  **Returning the Tax Units**:
+>     -   The function finally returns the tax units in a list format by calling the `output()` method on each tax unit stored in the `units` dictionary.
+>
+> From the provided code, it's apparent that this function is a part of a larger system, and there are some external components and functions referenced (e.g., `TaxUnit`, `filingparams`, `find_person`, `is_dependent`, and `eic_eligible`). These are likely defined elsewhere in the program or are imported from external modules.
+
+After combining cps units and validating them, the following are done:
 
 -   minor puf prep via puf.preppuf()
 
@@ -83,3 +110,9 @@ Here's my interpretation:
     -   split cps into filers and non-filers
 
 -   statistical match: run statmatch.match()
+
+## Statistical matching
+
+Get some logit and ols betas from files. (Figure out how they were created.)
+
+Call statmatch.match().

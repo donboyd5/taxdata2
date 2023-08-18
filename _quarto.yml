@@ -19,7 +19,8 @@ book:
       - references.qmd
     - part: "Appendix"
       chapters: 
-        - appendix.qmd
+        - taxdata_appendix.qmd
+        - tpc_matching_appendix.qmd
     
 bibliography: references.bib
 

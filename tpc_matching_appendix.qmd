@@ -1,0 +1,41 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Appendix: Tax Policy Center Statistical Matching and Imputation
+
+[Brief description doc](https://www.taxpolicycenter.org/resources/brief-description-tax-model) describes the overall process, including wealth imputation.
+
+[This document](https://www.taxpolicycenter.org/sites/default/files/publication/159656/description-of-the-tax-policy-center-microsimulation-models-revamped-health-module_0.pdf) purportedly descripes the TPC statistical matching process in detail.
+
+## TPC Statistical matching
+
+### Partitioning Datasets
+
+To preserve crucial characteristics, we define several partitions for the match. The HIPSM dataset is far larger than the tax model database, so we can define a large number of partitions and still have an adequate number of donor file records in each partition. Partitions are defined by a combination of seven characteristics:
+
+1\. Presence of wage income;
+
+2\. Tax filing status (single, joint, head of household);
+
+3\. Presence of tax unit members age 65 and over (no members age 65+, one spouse age 65+, both spouses age 65+, dependents age 65+);
+
+4\. Categories for number of dependents;
+
+5\. Presence of employer-sponsored health insurance (ESI);
+
+6\. Firm size of ESI policy holder (≤50 workers, 50-1000 workers, 1000+ workers); and
+
+7\. Modified adjusted gross income (MAGI)3 as a percentage of the Federal Poverty Line (FPL) category (\<138% of FPL, 138-400% of FPL, 400%+ of FPL).
+
+To ensure a large pool of donor records in each partition, some partitions are collapsed by firm size, employer coverage, or number of dependents. For example, firm size is collapsed for partitions with employer coverage, MAGI below 138 percent of FPL, presence of wage income, filing jointly, and having one elderly member. Wage income, filing status, number of elderly unit members, and MAGI are never collapsed. We categorize HIPSM and tax model tax units into 282 partitions.
+
+### Ranking AGI and Selecting Donor Units
+
+**Within partitions, we match tax model units to HIPSM units with similar incomes.** Because units within partitions can contain different numbers of people, we rank tax model and HIPSM units within partitions by MAGI per capita. We then match each tax model unit with the HIPSM unit with the closest per capita MAGI rank and import health variables from the HIPSM unit to the tax model unit. Imported variables include health insurance coverage, policy holder status, ESI offers, ESI premiums, and non-group premiums.
+
+### Assessing Match
+
+To assess how well matching algorithm works, table 1 compares the distribution of health insurance coverage imported into the tax model and in HIPSM by income as a percentage of the federal poverty level (FPL). The distributions are generally similar, particularly for ESI coverage, which is the most important variable for analyzing tax expenditures for health. One notable difference is for low-income people with Medicaid, non-group, or uninsured status. Compared to HIPSM, the tax model has relatively fewer people with incomes below 50 percent of FPL and relatively more with income between 50 and 100 percent of FPL. This stems from differences in the income distributions of the two models, as can be seen in the "All" column.4

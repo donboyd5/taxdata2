@@ -22,6 +22,8 @@ library(ggrepel)
 # remotes::install_github(c("ropensci/tabulizerjars", "ropensci/tabulizer"), INSTALL_opts = "--no-multiarch")
 library(tabulizer)
 
+library(StatMatch)
+
 # my packages
 # renv::install(here::here("renv/cellar/btools_0.9.5.tar.gz"))
 library(btools)
