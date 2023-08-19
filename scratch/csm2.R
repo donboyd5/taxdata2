@@ -4,8 +4,173 @@ source(here::here("r", "libraries.r"))
 # source(here::here("r", "constants.r"))
 library(Rcpp)
 library(optmatch)
-# library(rlemon)
+library(RANN)
+library(rlemon)
 sourceCpp(here::here("cpp", "functions_matching.cpp"))
+
+# get data ----
+# draw two similar subsets of the puf
+dir <- r"(E:\data\puf_files\puf2015)"
+dfa <- arrow::read_parquet(fs::path(dir, "puf_2015.parquet"))
+glimpse(dfa)
+count(dfa, mars)
+
+narecs <- 100
+nbrecs <- 100
+
+set.seed(12)
+dfb <- dfa |> 
+  filter(mars==2, e00100>=25e3, e00100<50e3) |> 
+  sample_n(narecs + nbrecs) |> 
+  select(recid, weight, agi=e00100, wages=e00200, interest=e00300, dividends=e00600, businc=e00900, capgains=e01000, socsec=e02400)
+
+idvars <- quote(c(recid, weight))
+xvars <- quote(c(agi, capgains, socsec))
+yvars <- quote(c(wages, businc))
+zvars <- quote(c(interest, dividends))
+
+afile <- dfb |> 
+  filter(row_number() %in% 1:narecs) |> 
+  select(!!idvars, !!xvars, !!yvars)
+glimpse(afile)
+
+bfile <- dfb |> 
+  filter(row_number() %in% (narecs + 1):(narecs + nbrecs)) |> 
+  select(!!idvars, !!xvars, !!zvars)
+
+set.seed(45)
+afile2 <- afile |> 
+  mutate(across(!!xvars, ~ .x * (1 + rnorm(n(), mean=0, sd=0.03))))
+afile2
+
+set.seed(78)
+bfile2 <- bfile |> 
+  mutate(across(!!xvars, ~ .x * (1 + rnorm(n(), mean=0, sd=0.05))))
+bfile2
+
+d1 <- afile2 |> 
+  select(agi, capgains, socsec)
+
+d2 <- bfile2 |> 
+  select(agi, capgains, socsec)
+
+
+# rann nearest neighbor ----
+nearestab <- nn2(d1, d2, k=10, eps=0.0) # eps 0.0 is exact
+nearestab
+
+nearestba <- nn2(d2, d1, k=10, eps=0.0) # eps 0.0 is exact
+nearestba
+
+# lemon min cost flow ----
+
+# https://errickson.net/rlemon/
+# https://rdrr.io/cran/rlemon/man/
+# https://rdrr.io/cran/rlemon/man/MinCostFlow.html
+# https://github.com/somjit101/Min-Cost-Network-Flow-Lemon
+# https://gist.github.com/Zhouxing-Su/6bb471f885dc29e5d25837abf78e7e5a
+# http://lemon.cs.elte.hu/pub/doc/latest-svn/quicktour.html
+# https://rdrr.io/cran/rlemon/src/R/mincostflow.R # "NetworkSimplex", "CostScaling", "CapacityScaling", "CycleCancelling"
+
+# MinCostFlow(
+#   arcSources,
+#   arcTargets,
+#   arcCapacities,
+#   arcCosts,
+#   nodeSupplies,
+#   numNodes,
+#   algorithm = "NetworkSimplex" # 
+# )
+
+# Prepare a dataframe that has variables needed for the MCF problem
+dim(nearestab$nn.idx)
+
+mcfidxab <- as_tibble(nearestab$nn.idx, .name_repair="unique") |> 
+  mutate(arow=row_number()) |> 
+  pivot_longer(-arow, names_to = "neighbor", values_to = "brow") |> 
+  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
+mcfidxab # this lists all the allowable arcs
+
+mcfidxba <- as_tibble(nearestba$nn.idx, .name_repair="unique") |> 
+  mutate(brow=row_number()) |> 
+  pivot_longer(-brow, names_to = "neighbor", values_to = "arow") |> 
+  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
+mcfidxba # this lists all the allowable arcs
+
+mcfidx <- bind_rows(mcfidxab |> mutate(type="AB"),
+                    mcfidxba |> mutate(type="BA")) |> 
+  select(arow, brow, type, neighbor)
+
+mcfcostab <- as_tibble(nearestab$nn.dists, .name_repair="unique") |> 
+  mutate(arow=row_number()) |> 
+  pivot_longer(-arow, names_to = "neighbor", values_to = "costab") |> 
+  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer(),
+         type="AB")
+mcfcostab
+
+mcfcostba <- as_tibble(nearestba$nn.dists, .name_repair="unique") |> 
+  mutate(brow=row_number()) |> 
+  pivot_longer(-brow, names_to = "neighbor", values_to = "costba") |> 
+  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer(),
+         type="BA")
+mcfcostba
+
+mcf1 <- mcfidx |> 
+  left_join(mcfcostab, by = join_by(arow, type, neighbor)) |>
+  left_join(mcfcostba, by = join_by(brow, type, neighbor)) |> 
+  mutate(cost=ifelse(type=="AB", costab, costba)) |> 
+  select(arow, brow, type, neighbor, cost, costab, costba) |> 
+  arrange(arow, brow)
+
+mcf2 <- mcf1 |> 
+  select(arow, brow, cost) |> 
+  distinct()
+
+mcf3 <- mcf2 |> 
+  left_join(afile2 |> 
+              mutate(arow=row_number()) |> 
+              select(arow, recida=recid, weighta=weight),
+            by = join_by(arow)) |> 
+  left_join(bfile2 |> 
+              mutate(brow=row_number()) |> 
+              select(brow, recidb=recid, weightb=weight),
+            by = join_by(brow)) |> 
+  select(arow, brow, recida, recidb, weighta, weightb, cost) |> 
+  arrange(arow, cost)
+
+
+atmp <- mcf2 |> 
+  summarise(n=n(), cost=sum(cost), .by=arow)
+
+btmp <- mcf2 |> 
+  summarise(n=n(), cost=sum(cost), .by=brow)
+
+
+
+mcfdata <- bind_rows(afile2 |> 
+                       mutate(file="A", supply=-weight),
+                     bfile2 |> 
+                       mutate(file="B", supply=weight)) |> 
+  mutate(node=row_number())
+ht(mcfdata)
+sum(mcfdata$supply)
+
+
+
+
+res <- MinCostFlow(
+  arcSources=mcfdata |> filter(file=="B") |> pull(node),
+  arcTargets=mcfdata |> filter(file=="A") |> pull(node),
+  arcCapacities,
+  arcCosts,
+  nodeSupplies=mcfdata |> pull(supply),
+  numNodes=,
+  algorithm = "NetworkSimplex"
+)
+
+
+
+
 
 # test on the same data I used in julia ----
 adf <- read_delim("
@@ -137,20 +302,20 @@ checka |>
   count(n, order=TRUE)
 
 adf |> 
-  left_join(checka |> select(ida, acalc=weighta, n), by = join_by(ida)) |> 
+  left_join(checka |> select(ida, acalc=weight, n), by = join_by(ida)) |> 
   mutate(diff=acalc - weighta) |> 
   arrange(desc(abs(diff))) |> 
   head()
 
 checkb <- df |> 
-  summarise(weighta=sum(weighta),
-            weightb=sum(weightb),
+  summarise(weight=sum(weight),
             n=n(),
             .by=idb)
 bdf |> 
-  left_join(checkb |> select(idb, bcalc=weightb, n), by = join_by(idb)) |> 
+  left_join(checkb |> select(idb, bcalc=weight, n), by = join_by(idb)) |> 
   mutate(diff=bcalc - weightb) |> 
-  arrange(desc(abs(diff)))
+  arrange(desc(abs(diff))) |> 
+  head()
 
 abfile <- df |> 
   left_join(afile2 |> 
