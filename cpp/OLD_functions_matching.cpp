@@ -19,46 +19,41 @@ DataFrame matchrecs(DataFrame adf, DataFrame bdf) {
   int ia = 0; // 0-based in C++
   int ib = 0;
 
-  double tmp_weighta = weighta[0]; // seed with info from the first record
-  double tmp_weightb = weightb[0];
+  double dweighta = weighta[0]; // seed with info from the first record
+  double dweightb = weightb[0];
   
   std::vector<int> records_ida, records_idb;
-  std::vector<double> records_weight, records_ranka, records_rankb;
+  std::vector<double> records_weighta, records_weightb, records_ranka, records_rankb;
   
-  while (true) {
-    if (tmp_weightb > tmp_weighta) { // done with the a record so write result
+  while (ia < ida.size() && ib < idb.size()) {
+    if (dweightb > dweighta) { // done with the a record so write result
       records_ida.push_back(ida[ia]);
       records_idb.push_back(idb[ib]);
-      records_weight.push_back(tmp_weighta);
+      records_weighta.push_back(dweighta);
+      records_weightb.push_back(dweighta);
       records_ranka.push_back(ranka[ia]);
       records_rankb.push_back(rankb[ib]);
       
-      tmp_weightb = tmp_weightb - tmp_weighta;
+      dweightb = dweightb - dweighta;
       ia++;
-      if(ia >= ida.size()){
-        break;
-      }
-      tmp_weighta = weighta[ia]; // get the next weighta
+      dweighta = weighta[ia]; // get the next weighta
       
     } else {
       records_ida.push_back(ida[ia]);
       records_idb.push_back(idb[ib]);
-      records_weight.push_back(tmp_weightb);
+      records_weighta.push_back(dweightb);
+      records_weightb.push_back(dweightb);
       records_ranka.push_back(ranka[ia]);
       records_rankb.push_back(rankb[ib]);
       
-      tmp_weighta = tmp_weighta - tmp_weightb;
+      dweighta = dweighta - dweightb;
       ib++;
-      if(ib >= idb.size()){
-        break;
-      }
-      tmp_weightb = weightb[ib]; // get the next weightb
+      dweightb = weightb[ib]; // get the next weightb
     }
   }
   
-  return DataFrame::create(_["ida"]=records_ida, _["idb"]=records_idb, 
-                           _["weight"]=records_weight, 
-                           _["ranka"]=records_ranka, _["rankb"]=records_rankb);
+  return DataFrame::create(_["ida"]=records_ida, _["idb"]=records_idb, _["weighta"]=records_weighta, 
+                          _["weightb"]=records_weightb, _["ranka"]=records_ranka, _["rankb"]=records_rankb);
 }
 
 

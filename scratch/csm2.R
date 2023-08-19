@@ -2,16 +2,88 @@
 source(here::here("r", "libraries.r"))
 # source(here::here("r", "functions.r"))
 # source(here::here("r", "constants.r"))
+library(Rcpp)
 library(optmatch)
 # library(rlemon)
+sourceCpp(here::here("cpp", "functions_matching.cpp"))
+
+# test on the same data I used in julia ----
+adf <- read_delim("
+ida weighta ranka
+4 79.9297 0.045742
+1 93.4751 0.410937
+8 74.8385 0.518504
+7 49.0379 0.624424
+10 5.8328 0.630887
+5 66.3594 0.729227
+9 56.304 0.747482
+2 11.9394 0.858867
+6 67.1042 0.979532
+3 21.3759 0.986625",
+delim=" ", col_names = TRUE, trim_ws = TRUE)
+
+bdf <- read_delim("
+idb weightb rankb
+5 32.3814 0.0658773
+3 110.878 0.171634
+2 117.388 0.219503
+4 170.165 0.580475
+1 95.3846 0.759547",
+delim=" ", col_names = TRUE, trim_ws = TRUE)
+
+adf <- adf |> 
+  arrange(desc(ranka))
+
+bdf <- bdf |> 
+  arrange(desc(rankb))
+
+ab <- matchrecs(adf, bdf)
+ab |> 
+  arrange(ida, desc(rankb))
+
+#    ida idb  weight    ranka     rankb
+# 1    1   2 30.1455 0.410937 0.2195030
+# 2    1   3 63.3296 0.410937 0.1716340
+# 3    2   1  6.9045 0.858867 0.7595470
+# 4    2   4  5.0349 0.858867 0.5804750
+# 5    3   1 21.3759 0.986625 0.7595470
+# 6    4   3 47.5484 0.045742 0.1716340
+# 7    4   5 32.3813 0.045742 0.0658773
+# 8    5   4 66.3594 0.729227 0.5804750
+# 9    6   1 67.1042 0.979532 0.7595470
+# 10   7   4 36.6339 0.624424 0.5804750
+# 11   7   2 12.4040 0.624424 0.2195030
+# 12   8   2 74.8385 0.518504 0.2195030
+# 13   9   4 56.3040 0.747482 0.5804750
+# 14  10   4  5.8328 0.630887 0.5804750
+
+# julia result:
+# Row │ ida    idb    weight    ranka     rankb
+# 1 │     1      2  30.1459   0.410937  0.219503
+# 2 │     1      3  63.3293   0.410937  0.171634
+# 3 │     2      1   6.90455  0.858867  0.759547
+# 4 │     2      4   5.03481  0.858867  0.580475
+# 5 │     3      1  21.3759   0.986625  0.759547
+# 6 │     4      3  47.5482   0.045742  0.171634
+# 7 │     4      5  32.3814   0.045742  0.0658773
+# 8 │     5      4  66.3594   0.729227  0.580475
+# 9 │     6      1  67.1042   0.979532  0.759547
+# 10 │     7      4  36.6342   0.624424  0.580475
+# 11 │     7      2  12.4037   0.624424  0.219503
+# 12 │     8      2  74.8385   0.518504  0.219503
+# 13 │     9      4  56.304    0.747482  0.580475
+# 14 │    10      4   5.8328   0.630887  0.580475
+
+
+# test on real data ----
 
 dir <- r"(E:\data\puf_files\puf2015)"
 
 dfa <- arrow::read_parquet(fs::path(dir, "puf_2015.parquet"))
 
-set.seed(123)
+set.seed(12)
 dfb <- dfa |> 
-  sample_n(100) |> 
+  sample_n(100000) |> 
   select(recid, weight, agi=e00100, wages=e00200, interest=e00300, dividends=e00600, businc=e00900, capgains=e01000, socsec=e02400)
 dfb
 
@@ -20,6 +92,126 @@ xvars <- quote(c(agi, capgains, socsec))
 yvars <- quote(c(wages, businc))
 zvars <- quote(c(interest, dividends))
 
+afile <- dfb |> 
+  select(!!idvars, !!xvars, !!yvars)
+glimpse(afile)
+
+bfile <- dfb |> 
+  select(!!idvars, !!xvars, !!zvars)
+
+set.seed(45)
+afile2 <- afile |> 
+  mutate(across(!!xvars, ~ .x * (1 + rnorm(n(), mean=0, sd=0.03))))
+afile2
+
+set.seed(78)
+bfile2 <- bfile |> 
+  mutate(across(!!xvars, ~ .x * (1 + rnorm(n(), mean=0, sd=0.05))))
+bfile2
+
+adf <- afile2 |> 
+  select(ida=recid, weighta=weight, ranka=agi) |> 
+  arrange(ranka)
+
+bdf <- bfile2 |> 
+  select(idb=recid, weightb=weight, rankb=agi) |> 
+  mutate(weightb=weightb * sum(adf$weighta) / sum(weightb)) |> 
+  arrange(rankb)
+
+sum(adf$weighta)
+sum(bdf$weightb)
+
+# do the match ----
+df <- matchrecs(adf, bdf)
+
+# examine the match ----
+sum(df$weight)
+glimpse(df)
+
+# check - are all weight sums correct?
+checka <- df |> 
+  summarise(weight=sum(weight),
+            n=n(),
+            .by=ida)
+checka |> 
+  count(n, order=TRUE)
+
+adf |> 
+  left_join(checka |> select(ida, acalc=weighta, n), by = join_by(ida)) |> 
+  mutate(diff=acalc - weighta) |> 
+  arrange(desc(abs(diff))) |> 
+  head()
+
+checkb <- df |> 
+  summarise(weighta=sum(weighta),
+            weightb=sum(weightb),
+            n=n(),
+            .by=idb)
+bdf |> 
+  left_join(checkb |> select(idb, bcalc=weightb, n), by = join_by(idb)) |> 
+  mutate(diff=bcalc - weightb) |> 
+  arrange(desc(abs(diff)))
+
+abfile <- df |> 
+  left_join(afile2 |> 
+              select(ida=recid, !!xvars, !!yvars),
+            by = join_by(ida)) |> 
+  left_join(bfile2 |> 
+              select(idb=recid, !!zvars),
+            by = join_by(idb))
+
+abfile |> 
+  # this has the afile versions of the xvars, which won't be same as the bfile versions
+  # but sums of yvars and zvars hit the targets!
+  summarise(across(c(agi:dividends),
+                   ~ sum(.x * weighta)))
+afile2 |> 
+  summarise(across(c(agi:businc),
+                   ~ sum(.x * weight)))
+
+bfile2 |> 
+  summarise(across(c(agi:dividends),
+                   ~ sum(.x * weight)))
+
+df <- df |> 
+  arrange(ida, idb)
+
+tmp <- count(df, ida, sort=TRUE)
+count(tmp, n)
+recs <- tmp |> filter(n==4)
+recs
+id <- 152119 # 102800 152119 145909
+check <- df |> 
+  filter(ida==id)
+check
+sum(check$weighta)
+sum(check$weightb)
+adf |> 
+  filter(ida==id)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# djb ----
 afile <- dfb |> 
   select(!!idvars, !!xvars, !!yvars)
 glimpse(afile)
@@ -82,7 +274,7 @@ str(abmatch)
 
 abmatch <- pairmatch(ab ~ agi + capgains + socsec, controls=4, data = stack)
 
-library(Rcpp)
+
 #> 
 #> Attaching package: 'Rcpp'
 #> The following object is masked from 'package:inline':
@@ -136,112 +328,6 @@ sum(bdf$weightb)
 # sum(df$weightb)
 
 # now do it with real data -----
-
-set.seed(123)
-dfb <- dfa |> 
-  sample_n(10000) |> 
-  select(recid, weight, agi=e00100, wages=e00200, interest=e00300, dividends=e00600, businc=e00900, capgains=e01000, socsec=e02400)
-dfb
-
-idvars <- quote(c(recid, weight))
-xvars <- quote(c(agi, capgains, socsec))
-yvars <- quote(c(wages, businc))
-zvars <- quote(c(interest, dividends))
-
-afile <- dfb |> 
-  select(!!idvars, !!xvars, !!yvars)
-glimpse(afile)
-
-bfile <- dfb |> 
-  select(!!idvars, !!xvars, !!zvars)
-
-set.seed(456)
-afile2 <- afile |> 
-  mutate(across(!!xvars, ~ .x * (1 + rnorm(n(), mean=0, sd=0.03))))
-afile2
-
-set.seed(789)
-bfile2 <- bfile |> 
-  mutate(across(!!xvars, ~ .x * (1 + rnorm(n(), mean=0, sd=0.05))))
-bfile2
-
-
-adf <- afile2 |> 
-  select(ida=recid, weighta=weight, ranka=agi) |> 
-  arrange(ranka)
-
-bdf <- bfile2 |> 
-  select(idb=recid, weightb=weight, rankb=agi) |> 
-  mutate(weightb=weightb * sum(adf$weighta) / sum(weightb)) |> 
-  arrange(rankb)
-
-sum(adf$weighta)
-sum(bdf$weightb)
-
-sourceCpp(here::here("cpp", "functions_matching.cpp"))
-
-df <- matchrecs(adf, bdf)
-sum(df$weighta)
-sum(df$weightb)
-glimpse(df)
-
-# check - are all weight sums correct?
-checka <- df |> 
-  summarise(weighta=sum(weighta),
-            weightb=sum(weightb),
-            n=n(),
-            .by=ida)
-adf |> 
-  left_join(checka |> select(ida, acalc=weighta, n), by = join_by(ida)) |> 
-  mutate(diff=acalc - weighta) |> 
-  arrange(desc(abs(diff)))
-
-checkb <- df |> 
-  summarise(weighta=sum(weighta),
-            weightb=sum(weightb),
-            n=n(),
-            .by=idb)
-bdf |> 
-  left_join(checkb |> select(idb, bcalc=weightb, n), by = join_by(idb)) |> 
-  mutate(diff=bcalc - weightb) |> 
-  arrange(desc(abs(diff)))
-
-abfile <- df |> 
-  left_join(afile2 |> 
-              select(ida=recid, !!xvars, !!yvars),
-            by = join_by(ida)) |> 
-  left_join(bfile2 |> 
-              select(idb=recid, !!zvars),
-            by = join_by(idb))
-
-abfile |> 
-  # this has the afile versions of the xvars, which won't be same as the bfile versions
-  # but sums of yvars and zvars hit the targets!
-  summarise(across(c(agi:dividends),
-                 ~ sum(.x * weighta)))
-afile2 |> 
-  summarise(across(c(agi:businc),
-                   ~ sum(.x * weight)))
-
-bfile2 |> 
-  summarise(across(c(agi:dividends),
-                   ~ sum(.x * weight)))
-
-df <- df |> 
-  arrange(ida, idb)
-
-tmp <- count(df, ida, sort=TRUE)
-count(tmp, n)
-recs <- tmp |> filter(n==4)
-recs
-id <- 152119 # 102800 152119 145909
-check <- df |> 
-  filter(ida==id)
-check
-sum(check$weighta)
-sum(check$weightb)
-adf |> 
-  filter(ida==id)
 
 
 
