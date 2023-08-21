@@ -6,7 +6,7 @@ library(Rcpp)
 library(optmatch)
 library(RANN)
 library(rlemon)
-sourceCpp(here::here("cpp", "functions_matching.cpp"))
+# sourceCpp(here::here("cpp", "functions_matching.cpp"))
 
 # get data ----
 # draw two similar subsets of the puf
@@ -15,52 +15,102 @@ dfa <- arrow::read_parquet(fs::path(dir, "puf_2015.parquet"))
 glimpse(dfa)
 count(dfa, mars)
 
-narecs <- 100
-nbrecs <- 100
-
-set.seed(12)
-dfb <- dfa |> 
-  filter(mars==2, e00100>=25e3, e00100<50e3) |> 
-  sample_n(narecs + nbrecs) |> 
-  select(recid, weight, agi=e00100, wages=e00200, interest=e00300, dividends=e00600, businc=e00900, capgains=e01000, socsec=e02400)
-
-idvars <- quote(c(recid, weight))
+# for later
+idvars <- quote(c(node, suppdem, sdrow, recid, weight))
 xvars <- quote(c(agi, capgains, socsec))
 yvars <- quote(c(wages, businc))
 zvars <- quote(c(interest, dividends))
 
-afile <- dfb |> 
-  filter(row_number() %in% 1:narecs) |> 
-  select(!!idvars, !!xvars, !!yvars)
-glimpse(afile)
 
-bfile <- dfb |> 
-  filter(row_number() %in% (narecs + 1):(narecs + nbrecs)) |> 
-  select(!!idvars, !!xvars, !!zvars)
+nsupply <- 10
+ndemand <- 20
 
-set.seed(45)
-afile2 <- afile |> 
-  mutate(across(!!xvars, ~ .x * (1 + rnorm(n(), mean=0, sd=0.03))))
-afile2
+df1 <- dfa |> 
+  filter(mars==2, e00100>=25e3, e00100<50e3) |> 
+  sample_n(nsupply + ndemand) |> 
+  select(recid, weight, agi=e00100, wages=e00200, interest=e00300, dividends=e00600, businc=e00900, capgains=e01000, socsec=e02400) |> 
+  mutate(node=row_number(),
+         suppdem=ifelse(row_number() <= nsupply, "supply", "demand")) |>  # first recs are supplies, then demands
+  mutate(sdrow=row_number(), .by=suppdem) |> 
+  # adjust real demand weights to equal real supply weights
+  mutate(adjweight=ifelse(suppdem=="demand",
+                          weight*sum(weight[suppdem=="supply"]) / sum(weight[suppdem=="demand"]),
+                          weight)) |> 
+  # calculate unadjusted integer weights
+  mutate(iweight1=round(adjweight) |> as.integer())
 
-set.seed(78)
-bfile2 <- bfile |> 
-  mutate(across(!!xvars, ~ .x * (1 + rnorm(n(), mean=0, sd=0.05))))
-bfile2
+# is adjustment needed?
+df1 |> 
+  summarise(across(c(weight, adjweight, iweight1), sum), .by=suppdem)
 
-d1 <- afile2 |> 
+# balance integer weights if needed
+nodes <- df1 |> 
+  mutate(supply=ifelse(suppdem=="supply", iweight1, -iweight1))
+sum(nodes$supply)
+
+# get rann nearest-neighbor costs -----
+
+# get nearest neighbors in both directions
+
+supplies <- nodes |> 
+  filter(suppdem=="supply") |> 
   select(agi, capgains, socsec)
 
-d2 <- bfile2 |> 
+demands <- nodes |> 
+  filter(suppdem=="demand") |> 
   select(agi, capgains, socsec)
 
+# all demands, indexes for nearest supply neighbors
+stod_nn <- nn2(supplies, demands, k=nsupply, eps=0.0) # rows are demands, cols are supplies; eps 0.0 is exact
+stod_nn
 
-# rann nearest neighbor ----
-nearestab <- nn2(d1, d2, k=10, eps=0.0) # eps 0.0 is exact
-nearestab
+# all supplies, indexes for nearest demand neighbors
+dtos_nn <- nn2(demands, supplies, k=ndemand, eps=0.0) # rows are supplies, cols are demands; eps 0.0 is exact
+dtos_nn
 
-nearestba <- nn2(d2, d1, k=10, eps=0.0) # eps 0.0 is exact
-nearestba
+# get arcs both ways, then keep unique arcs ----
+
+# arcs: all demands, nearest neighbor supply indexes (supply to demand -- stod)
+stod_idx <- as_tibble(stod_nn$nn.idx, .name_repair="unique") |> 
+  mutate(drow=row_number()) |> 
+  pivot_longer(-drow, names_to = "neighbor", values_to = "srow")
+
+stod_dist <- as_tibble(stod_nn$nn.dist, .name_repair="unique") |> 
+  mutate(drow=row_number()) |> 
+  pivot_longer(-drow, names_to = "neighbor", values_to = "dist")
+
+stod_arcs <- left_join(stod_idx, stod_dist, by = join_by(drow, neighbor)) |> 
+  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
+stod_arcs
+
+# arcs: all supplies, nearest neighbor demand indexes
+dtos_idx <- as_tibble(dtos_nn$nn.idx, .name_repair="unique") |> 
+  mutate(srow=row_number()) |> 
+  pivot_longer(-srow, names_to = "neighbor", values_to = "drow")
+
+dtos_dist <- as_tibble(dtos_nn$nn.dist, .name_repair="unique") |> 
+  mutate(srow=row_number()) |> 
+  pivot_longer(-srow, names_to = "neighbor", values_to = "dist")
+
+dtos_arcs <- left_join(dtos_idx, dtos_dist, by = join_by(srow, neighbor)) |> 
+  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
+dtos_arcs
+
+# arcs: combine and keep unique arcs
+arcs1 <- bind_rows(stod_arcs, dtos_arcs)
+
+arcs2 <- arcs1 |> 
+  select(-neighbor) |> 
+  distinct()
+
+arcs <- arcs2 |> 
+  left_join(nodes |> filter(suppdem=="demand") |> select(dnode=node, drow=sdrow), by = join_by(drow)) |> 
+  left_join(nodes |> filter(suppdem=="supply") |> select(snode=node, srow=sdrow), by = join_by(srow)) |> 
+  select(snode, dnode, srow, drow, dist) |> 
+  mutate(dist=as.integer(dist)) |> 
+  arrange(snode, dnode)
+ht(arcs)
+
 
 # lemon min cost flow ----
 
@@ -81,95 +131,194 @@ nearestba
 #   numNodes,
 #   algorithm = "NetworkSimplex" # 
 # )
-
-# Prepare a dataframe that has variables needed for the MCF problem
-dim(nearestab$nn.idx)
-
-mcfidxab <- as_tibble(nearestab$nn.idx, .name_repair="unique") |> 
-  mutate(arow=row_number()) |> 
-  pivot_longer(-arow, names_to = "neighbor", values_to = "brow") |> 
-  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
-mcfidxab # this lists all the allowable arcs
-
-mcfidxba <- as_tibble(nearestba$nn.idx, .name_repair="unique") |> 
-  mutate(brow=row_number()) |> 
-  pivot_longer(-brow, names_to = "neighbor", values_to = "arow") |> 
-  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
-mcfidxba # this lists all the allowable arcs
-
-mcfidx <- bind_rows(mcfidxab |> mutate(type="AB"),
-                    mcfidxba |> mutate(type="BA")) |> 
-  select(arow, brow, type, neighbor)
-
-mcfcostab <- as_tibble(nearestab$nn.dists, .name_repair="unique") |> 
-  mutate(arow=row_number()) |> 
-  pivot_longer(-arow, names_to = "neighbor", values_to = "costab") |> 
-  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer(),
-         type="AB")
-mcfcostab
-
-mcfcostba <- as_tibble(nearestba$nn.dists, .name_repair="unique") |> 
-  mutate(brow=row_number()) |> 
-  pivot_longer(-brow, names_to = "neighbor", values_to = "costba") |> 
-  mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer(),
-         type="BA")
-mcfcostba
-
-mcf1 <- mcfidx |> 
-  left_join(mcfcostab, by = join_by(arow, type, neighbor)) |>
-  left_join(mcfcostba, by = join_by(brow, type, neighbor)) |> 
-  mutate(cost=ifelse(type=="AB", costab, costba)) |> 
-  select(arow, brow, type, neighbor, cost, costab, costba) |> 
-  arrange(arow, brow)
-
-mcf2 <- mcf1 |> 
-  select(arow, brow, cost) |> 
-  distinct()
-
-mcf3 <- mcf2 |> 
-  left_join(afile2 |> 
-              mutate(arow=row_number()) |> 
-              select(arow, recida=recid, weighta=weight),
-            by = join_by(arow)) |> 
-  left_join(bfile2 |> 
-              mutate(brow=row_number()) |> 
-              select(brow, recidb=recid, weightb=weight),
-            by = join_by(brow)) |> 
-  select(arow, brow, recida, recidb, weighta, weightb, cost) |> 
-  arrange(arow, cost)
+# arcSources	Vector corresponding to the source nodes of a graph's edges
+# arcTargets	Vector corresponding to the destination nodes of a graph's edges
+# arcCapacities	Vector corresponding to the capacities of nodes of a graph's edges
+# arcCosts	Vector corresponding to the capacities of nodes of a graph's edges
+# nodeSupplies	Vector corresponding to the supplies of each node
+# numNodes	The number of nodes in the graph
+# algorithm	Choices of algorithm include "NetworkSimplex", "CostScaling", "CapacityScaling", and "CycleCancelling". NetworkSimplex is the default.
 
 
-atmp <- mcf2 |> 
-  summarise(n=n(), cost=sum(cost), .by=arow)
-
-btmp <- mcf2 |> 
-  summarise(n=n(), cost=sum(cost), .by=brow)
-
-
-
-mcfdata <- bind_rows(afile2 |> 
-                       mutate(file="A", supply=-weight),
-                     bfile2 |> 
-                       mutate(file="B", supply=weight)) |> 
-  mutate(node=row_number())
-ht(mcfdata)
-sum(mcfdata$supply)
-
-
-
+# be sure to convert all to integers
+max(abs(supplies$isupply))
+max(abs(nodes$supply))
 
 res <- MinCostFlow(
-  arcSources=mcfdata |> filter(file=="B") |> pull(node),
-  arcTargets=mcfdata |> filter(file=="A") |> pull(node),
-  arcCapacities,
-  arcCosts,
-  nodeSupplies=mcfdata |> pull(supply),
-  numNodes=,
+  # flows are from B to A
+  arcSources=arcs$snode,
+  arcTargets=arcs$dnode,
+  arcCapacities=rep(max(abs(nodes$supply)), nrow(arcs)),
+  arcCosts=arcs$dist,
+  nodeSupplies=nodes$supply,
+  numNodes=nrow(nodes),
   algorithm = "NetworkSimplex"
 )
 
+res$feasibility
+res$flows
+res$potentials
+res$cost
+
+# put the results together and check
+flows <- arcs |>
+  mutate(flow=res$flows)
+  
+flows |> 
+  summarise(flow=sum(flow), .by=snode)
+
+nodes |> 
+  filter(suppdem=="supply") |> 
+  select(node, iweight1)
+
+flows |> 
+  summarise(flow=sum(flow), .by=dnode)
+
+nodes |> 
+  filter(suppdem=="demand") |> 
+  select(node, iweight1)
 
 
+
+
+small_graph_example # note that all of the following are integers
+s1 <- small_graph_example$startnodes # supply labels
+t1 <- small_graph_example$endnodes # termination labels
+cap1 <- small_graph_example$arccapacity # capacities
+costs1 <- small_graph_example$arccosts
+n1 <- small_graph_example$nodedemand  # nodeSupplies, sums to zero
+nnodes1 <- 34
+# pick a problem
+s <- s1; t <- t1; cap <- cap1; costs <- costs1; n <- n1; nnodes <- nnodes1 # lemon small example
+
+
+tibble(s=s, t=t)
+
+length(unique(s)) # 32
+length(unique(t)) # 24
+length(s); length(t); length(cap); length(costs); length(n)
+# 274, 274, 274, 274, 34
+sort(unique(c(s, t))) # 1:34
+n
+sum(n) # sums to zero
+quantile(costs) # ranges from zero to 3,837
+cbind(s, t) # first is from 2 to 14, cap appears to be 1, costs are 1194, s is 22, t is -22, flow is zero
+
+CountBiEdgeConnectedComponents(s, t, nnodes)
+CountConnectedComponents(s, t, nnodes)
+CountStronglyConnectedComponents(s, t, nnodes) # 34 or 40
+FindBiEdgeConnectedComponents(s, t, nnodes)
+FindBiEdgeConnectedCutEdges(s, t, nnodes)
+FindConnectedComponents(s, t, nnodes)
+GetAndCheckTopologicalSort(s, t, nnodes)
+GetTopologicalSort(s, t, nnodes)
+
+IsAcyclic(s, t, nnodes)
+IsBiEdgeConnected(s, t, nnodes)
+IsBipartite(s, t, nnodes) # mine is bipartite, lemon small example is not
+IsConnected(s, t, nnodes)
+IsEulerian(s, t, nnodes) # lemon example false, my example true
+IsParallelFree(s, t, nnodes)
+IsSimpleGraph(s, t, nnodes)
+
+s <- s1; t <- t1; cap <- cap1; costs <- costs1; n <- n1; nnodes <- nnodes1 # lemon small example
+s <- s2; t <- t2; cap <- cap2; costs <- costs2; n <- n2; nnodes <- nnodes2 # my problem
+
+IsStronglyConnected(s, t, nnodes)
+MaxCardinalityMatching(s, t, nnodes) # lemon simple has 12, mine has 20
+IsSimpleGraph(s, t, nnodes)
+IsSimpleGraph(s, t, nnodes)
+IsSimpleGraph(s, t, nnodes)
+IsSimpleGraph(s, t, nnodes)
+ 
+# https://lemon.cs.elte.hu/pub/doc/1.3.1/a00612.html
+# In general, NetworkSimplex and CostScaling are the most efficient
+# implementations. NetworkSimplex is usually the fastest on relatively small
+# graphs (up to several thousands of nodes) and on dense graphs, while
+# CostScaling is typically more efficient on large graphs (e.g. hundreds of
+# thousands of nodes or above), especially if they are sparse. However, other
+# algorithms could be faster in special cases. For example, if the total supply
+# and/or capacities are rather small, CapacityScaling is usually the fastest
+# algorithm (without effective scaling).
+
+# These classes are intended to be used with integer-valued input data
+# (capacities, supply values, and costs), except for CapacityScaling, which is
+# capable of handling real-valued arc costs (other numerical data are required
+# to be integer).
+
+
+# let's look at arc 230 -- flow is 20
+cbind(s, t)[230, ] # s 10, t 33 -- these are the nodes
+costs[230] # zero cost
+cap[230] # capacity 21
+n[c(10, 33)] # supplies are 22, -198
+out$potentials[c(10, 33)] # -1416 -1416
+# so, arc 230, from node 10 to 33:
+#   node 10 can supply 22 in total
+#   node 33 wants 198 in total
+#   arc has capacity 21
+#   flow is 20 from node 10 to node 33
+
+
+# NetworkSimplex CostScaling CapacityScaling CycleCancelling
+out <- MinCostFlow(s, t, cap, costs, n, nnodes, algorithm = "CycleCancelling")
+out$feasibility
+out$flows # length is number of arcs
+out$potentials # length is number of nodes
+out$cost
+
+
+
+# --- djb start here next ----  
+
+library(dplyr)
+
+# Sample data
+set.seed(123)
+nrecs <- 50
+data <- tibble(supply = 1000+rnorm(nrecs)*100) |> 
+  mutate(supply=ifelse(supply < median(supply), -supply, supply),
+         supply=ifelse(supply < 0,
+                        supply * sum(supply*(supply >= 0)) / sum(-supply*(supply < 0)),
+                        supply))
+data
+sum(data$supply)
+
+data <- data %>%
+  mutate(
+    isupply = floor(supply), # initial integer approximation
+    frac = supply - isupply  # fractional part
+  )
+
+# If sum of isupply is too negative, adjust upwards
+n_adj = -sum(data$isupply)
+data = data %>%
+  arrange(desc(frac)) %>%
+  mutate(isupply = ifelse(row_number() <= n_adj, isupply + 1, isupply)) %>%
+  select(-frac) 
+
+sum(data$supply)
+sum(data$isupply)
+data
+data |> 
+  filter(isupply != round(supply))
+
+
+# cur_data()` was deprecated in dplyr 1.1.0. ℹ Please use `pick()` instead
+data <- data %>%
+  mutate(isupply = floor(supply)) %>%
+  arrange(supply - isupply) %>%
+  mutate(
+    isupply = ifelse(
+      row_number() <= (-sum(cur_data()$isupply)), 
+      isupply + 1, 
+      isupply
+    )
+  )
+
+data
+sum(data$supply)
+sum(data$isupply)
 
 
 # test on the same data I used in julia ----
