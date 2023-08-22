@@ -10,20 +10,35 @@ library(rlemon)
 # sourceCpp(here::here("cpp", "functions_matching.cpp"))
 
 
+# test knn speed ----
+
+# CONCLUSIONS:
+#   d1d <- get.knnx(data, query, k=k, algorithm="brute") from FNN is fastest and best
+#   n2 (fileb) small has a big impact
+#   m # xvars small also big impact
+#   k small also has a big impact
+#   20k n, 5k n2, 10 m, k 10% solves in < 2 seconds -- reasonable real-world parameters
+#   20k, 5k is 2x faster than 5k, 20k and MUCH faster if k is % of 20k the RHS file
+
 # data<- query<- cbind(1:n, 1:n)
 # get.knnx(data, query, k=10, algorithm=c("kd_tree", "cover_tree", "CR", "brute"))
 
 n <- 20000 # 1a 107 seconds, 1b 214, 81 1c , 74 1d, 105 2a , 108 2b
 n2 <- 5000
-m <- 20 # number of x vars used in distance calc - no material impact on speed
-k <- round(n * .01) # for 20k, 20: time drops from 107 (10%0) to 33 (5%) to  (1%)
+m <- 10 # number of x vars used in distance calc - no material impact on speed
+k <- round(n2 * .1) # for 20k, 20: time drops from 107 (10%) to 33 (5%) to  (1%)
 
-data <- query <- matrix(rnorm(n*k), ncol=k)
+set.seed(123)
+data <- matrix(rnorm(n*m), ncol=m)
+query <- matrix(rnorm(n2*m), ncol=m)
 
-system.time(d1a <- get.knnx(data, query, k=k, algorithm="kd_tree")) # much faster than cover_tree
+system.time(d1a <- get.knnx(data, query, k=k, algorithm="kd_tree")) # much faster than cover_tree when good; seems to hang sometimes
 system.time(d1b <- get.knnx(data, query, k=k, algorithm="cover_tree"))
 system.time(d1c <- get.knnx(data, query, k=k, algorithm="CR")) # DON'T USE - GIVES DIFFERENT INDEXES
-system.time(d1d <- get.knnx(data, query, k=k, algorithm="brute")) # fast, maybe best
+system.time(d1d <- get.knnx(data, query, k=k, algorithm="brute")) # fast, maybe BEST
+k2 <- round(n * .1) 
+k2 <- 500
+system.time(d1e <- get.knnx(query, data, k=k2, algorithm="brute")) # query, data about 2x as long as data, query, MUCH longer if we change k!!!
 system.time(d2a <- nn2(data, query, k=k, eps=0.0)) # fast
 system.time(d2b <- nn2(data, query, k=k, eps=1e-5))
 
@@ -39,6 +54,10 @@ d1a$nn.dist[1:5, 1:5]
 d1b$nn.dist[1:5, 1:5]
 d1c$nn.dist[1:5, 1:5]
 d1d$nn.dist[1:5, 1:5]
+
+tmp <- d1e$nn.dist
+tmp[1, ]
+plot(tmp[100, ])
 
 d2a$nn.dist[1:5, 1:5]
 d2b$nn.dist[1:5, 1:5]
@@ -71,6 +90,44 @@ knn.out$prob
 
 # functions for file matching - temporary holding place ----
 
+na <- 10
+nb <- 20
+
+dfx <- dfa |> 
+  filter(mars==2, e00100>=25e3, e00100<50e3) |> 
+  sample_n(na + nb) |> 
+  select(recid, weight, agi=e00100, wages=e00200, interest=e00300, dividends=e00600, businc=e00900, capgains=e01000, socsec=e02400) 
+glimpse(dfx)
+
+afile <- dfx |> 
+  filter(row_number() <= na) 
+
+bfile <- dfx |> 
+  filter(row_number() %in% (na + 1):(na + nb))
+
+get_distances <- function(afile, bfile){
+  maxrecs <- max(nrow(afile), nrow(bfile))
+  minrecs <- min(nrow(afile), nrow(bfile))
+  k = round(maxrecs) * .1
+  k <- min(k, 1000) # k can never be more than 1000
+  k <- max(k, 10) # k always must be at least 10
+  k <- min(k, minrecs) # but k cannot be less than the number of rows in the shorter file 
+  print(paste0("k: ", k))
+  
+  # distances for donating from file b to file a
+  dbtoa <- get.knnx(afile |> select(!!xvars),
+                    bfile |> select(!!xvars),
+                    k=k, algorithm="brute")
+  
+  # distances for donating from file a to file b
+  datob <- get.knnx(bfile |> select(!!xvars),
+                    afile |> select(!!xvars),
+                    k=k, algorithm="brute")
+  
+  return(list(dbtoa=dbtoa, datob=datob))
+}
+
+
 matchab <- function(afile, bfile, idvar, wtvar, xvars, balance_weights=TRUE){
   # create a node file
   afile1 <- afile |> 
@@ -81,7 +138,7 @@ matchab <- function(afile, bfile, idvar, wtvar, xvars, balance_weights=TRUE){
            arow=row_number(),
            node=row_number(),
            weightadj=weight,
-           iweight1=round(weightadj) |> as.integer())
+           iweight=round(weightadj) |> as.integer())
   
   bfile1 <- bfile |> 
     select(all_of(c(idvar, wtvar, xvars))) |> 
@@ -91,26 +148,45 @@ matchab <- function(afile, bfile, idvar, wtvar, xvars, balance_weights=TRUE){
            brow=row_number(),
            node=row_number() + nrow(afile),
            weightadj=weight * sum(afile[[wtvar]]) / sum(weight),
-           iweight1=round(weightadj) |> as.integer())
+           iweight=round(weightadj) |> as.integer())
   
   print("balancing integer weights by adjusting bfile...")
-  awtsum <- sum(afile1$iweight1)
-  bwtsum <- sum(bfile1$iweight1)
+  awtsum <- sum(afile1$iweight)
+  bwtsum <- sum(bfile1$iweight)
   diffba <- bwtsum - awtsum
   addval <- case_when(diffba < 0 ~  1,
                       diffba > 0 ~ -1,
                       TRUE ~ 0)
   
   bfile1 <- bfile1 |> 
-    mutate(iweight1=ifelse(row_number() <= abs(diffba),
-                           iweight1 + addval,
-                           iweight1))
+    mutate(weight=ifelse(row_number() <= abs(diffba),
+                           weight + addval,
+                           weight))
   
-  return(bfile1)
+  # get distances
+  print("getting ab and ba distances and selecting unique combinations...")
+  dists <- get_distances(afile1, bfile1)
+
+  
+  # nodes <- bind_rows() |> 
+  #   mutate(supply=ifelse(suppdem=="supply", iweight, -iweight1))
+  # sum(nodes$supply)
+  
+  return(list(a=afile1, b=bfile1, dists=dists))
 }
 
-df <- matchab(df1, df1 |> mutate(weight=weight + 1), idvar="recid", wtvar="weight", xvars=c("agi", "capgains", "socsec"))
-df
+
+ldf <- matchab(afile, bfile |> mutate(weight=weight + 1), idvar="recid", wtvar="weight", xvars=c("agi", "capgains", "socsec"))
+ldf
+
+ldf$a
+ldf$b
+ldf$dists$dbtoa
+ldf$dists$datob
+
+
+bind_rows(ldf$a |> mutate(ab="a"), ldf$b |> mutate(ab="b")) |> 
+  summarise(across(c(weight, weightadj, iweight1), sum), .by=ab)
 
 # get data ----
 # draw two similar subsets of the puf
