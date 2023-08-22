@@ -90,8 +90,8 @@ knn.out$prob
 
 # functions for file matching - temporary holding place ----
 
-na <- 10
-nb <- 20
+na <- 4000
+nb <- 3000
 
 dfx <- dfa |> 
   filter(mars==2, e00100>=25e3, e00100<50e3) |> 
@@ -104,6 +104,9 @@ afile <- dfx |>
 
 bfile <- dfx |> 
   filter(row_number() %in% (na + 1):(na + nb))
+
+
+
 
 get_distances <- function(afile, bfile, xvars){
   maxrecs <- max(nrow(afile), nrow(bfile))
@@ -129,30 +132,45 @@ get_distances <- function(afile, bfile, xvars){
   return(list(dbtoa=dbtoa, datob=datob))
 }
 
-get_arcs <- function(dbtoa, datob){
+
+get_nodes <- function(afile, bfile){
+  nodes <- bind_rows(afile |> 
+                       select(id, node, abrow=arow, weight, weightadj, iweight) |> 
+                       mutate(file="A",
+                              supply=-iweight),
+                     bfile |> 
+                       select(id, node, abrow=brow, weight, weightadj, iweight) |> 
+                       mutate(file="B",
+                              supply=iweight)) |> 
+    select(id, node, file, abrow, everything())
+  return(nodes)
+}
+
+
+get_arcs <- function(dbtoa, datob, nodes){
   # arcs: all demands, nearest neighbor supply indexes (supply to demand -- stod)
   dbtoa_idx <- as_tibble(dbtoa$nn.index, .name_repair="unique") |> 
-    mutate(arow=row_number()) |> 
-    pivot_longer(-arow, names_to = "neighbor", values_to = "brow")
+    mutate(brow=row_number()) |> 
+    pivot_longer(-brow, names_to = "neighbor", values_to = "arow")
   
   dbtoa_dist <- as_tibble(dbtoa$nn.dist, .name_repair="unique") |> 
-    mutate(arow=row_number()) |> 
-    pivot_longer(-arow, names_to = "neighbor", values_to = "dist")
+    mutate(brow=row_number()) |> 
+    pivot_longer(-brow, names_to = "neighbor", values_to = "dist")
   
-  dbtoa_arcs <- left_join(dbtoa_idx, dbtoa_dist, by = join_by(arow, neighbor)) |> 
+  dbtoa_arcs <- left_join(dbtoa_idx, dbtoa_dist, by = join_by(brow, neighbor)) |> 
     mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
   # dbtoa_arcs
   
   # arcs: all supplies, nearest neighbor demand indexes
   datob_idx <- as_tibble(datob$nn.index, .name_repair="unique") |> 
-    mutate(brow=row_number()) |> 
-    pivot_longer(-brow, names_to = "neighbor", values_to = "arow")
+    mutate(arow=row_number()) |> 
+    pivot_longer(-arow, names_to = "neighbor", values_to = "brow")
   
   datob_dist <- as_tibble(datob$nn.dist, .name_repair="unique") |> 
-    mutate(brow=row_number()) |> 
-    pivot_longer(-brow, names_to = "neighbor", values_to = "dist")
+    mutate(arow=row_number()) |> 
+    pivot_longer(-arow, names_to = "neighbor", values_to = "dist")
   
-  datob_arcs <- left_join(datob_idx, datob_dist, by = join_by(brow, neighbor)) |> 
+  datob_arcs <- left_join(datob_idx, datob_dist, by = join_by(arow, neighbor)) |> 
     mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
   # datob_arcs
   
@@ -164,31 +182,22 @@ get_arcs <- function(dbtoa, datob){
     distinct()
   
   arcs <- arcs1 |> 
-    left_join(nodes |> filter(ab=="") |> select(dnode=node, drow=sdrow), by = join_by(drow)) |> 
-    left_join(nodes |> filter(suppdem=="supply") |> select(snode=node, srow=sdrow), by = join_by(srow)) |> 
-    select(snode, dnode, srow, drow, dist) |> 
-    mutate(dist=as.integer(dist)) |> 
-    arrange(snode, dnode)
+    left_join(nodes |> filter(file=="B") |> select(bnode=node, brow=abrow), by = join_by(brow)) |> 
+    left_join(nodes |> filter(file=="A") |> select(anode=node, arow=abrow), by = join_by(arow)) |> 
+    select(anode, bnode, arow, brow, dist) |> 
+    mutate(dist=as.integer(dist*1000.)) |> 
+    arrange(anode, bnode)
   
   return(arcs)
 }
 
-get_nodes <- function(afile, bfile){
-  nodes <- bind_rows(afile |> 
-                       select(id, node, abrow=arow, weight, weightadj, iweight) |> 
-                       mutate(ab="a",
-                              supply=iweight),
-                     bfile |> 
-                       select(id, node, abrow=brow, weight, weightadj, iweight) |> 
-                       mutate(ab="b",
-                              supply=-iweight)) |> 
-    select(id, node, ab, abrow, everything())
-  return(nodes)
-}
+
   
+idvar <- "recid"; wtvar <- "weight"; xvars <- c("agi", "capgains", "socsec")
 
 
 matchab <- function(afile, bfile, idvar, wtvar, xvars, balance_weights=TRUE){
+  # flows are from B to A
   # create a node file
   afile1 <- afile |> 
     select(all_of(c(idvar, wtvar, xvars))) |> 
@@ -229,25 +238,71 @@ matchab <- function(afile, bfile, idvar, wtvar, xvars, balance_weights=TRUE){
   dists <- get_distances(afile1, bfile1, xvars)
   
   nodes <- get_nodes(afile1, bfile1)
-  arcs <- get_arcs(dists$dbtoa, dists$datob)
+  arcs <- get_arcs(dists$dbtoa, dists$datob, nodes)
   
-  return(arcs)
+  return(list(nodes=nodes, arcs=arcs))
 }
 
-
+a <- proc.time()
 ldf <- matchab(afile, bfile |> mutate(weight=weight + 1), idvar="recid", wtvar="weight", xvars=c("agi", "capgains", "socsec"))
+b <- proc.time()
+b - a
 ldf
 
-sum(ldf$supply)
+ldf$nodes
+ldf$arcs
 
-ldf$a
-ldf$b
-ldf$dists$dbtoa
-ldf$dists$datob
+sum(ldf$nodes$supply)
 
 
-bind_rows(ldf$a |> mutate(ab="a"), ldf$b |> mutate(ab="b")) |> 
-  summarise(across(c(weight, weightadj, iweight1), sum), .by=ab)
+a <- proc.time()
+res <- MinCostFlow(
+  # flows are from B to A -- B has supply nodes
+  arcSources=ldf$arcs$bnode,
+  arcTargets=ldf$arcs$anode,
+  arcCapacities=rep(max(abs(ldf$nodes$supply)), nrow(ldf$arcs)),
+  arcCosts=ldf$arcs$dist,
+  nodeSupplies=ldf$nodes$supply,
+  numNodes=nrow(ldf$nodes),
+  algorithm = "NetworkSimplex"
+)
+b <- proc.time()
+b - a
+
+res$feasibility
+res$flows
+res$potentials
+res$cost
+
+# put it together
+df <- ldf$arcs |> 
+  mutate(flow=res$flows) |> 
+  filter(flow > 0) |>  # important
+  left_join(ldf$nodes |> 
+              filter(file=="A") |> 
+              select(arow=abrow, aweight=iweight),
+            by = join_by(arow)) |> 
+  left_join(ldf$nodes |> 
+              filter(file=="B") |> 
+              select(brow=abrow, bweight=iweight),
+            by = join_by(brow)) |> 
+  arrange(arow, brow)
+
+df |> 
+  summarise(flow=sum(flow), 
+            aweight=first(aweight),
+            .by=arow) |> 
+  arrange(arow) |> 
+  ht()
+
+df |> 
+  summarise(flow=sum(flow), 
+            bweight=first(bweight),
+            .by=brow) |> 
+  arrange(brow) |> 
+  ht()
+
+
 
 # get data ----
 # draw two similar subsets of the puf
