@@ -51,6 +51,24 @@
       ],
       "Hash": "a56a6365b3fa73293ea8d084be0d9bb0"
     },
+    "MatchIt": {
+      "Package": "MatchIt",
+      "Version": "4.5.4",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "Rcpp",
+        "RcppProgress",
+        "backports",
+        "chk",
+        "graphics",
+        "rlang",
+        "stats",
+        "utils"
+      ],
+      "Hash": "4cd83143d686ecfcd5bea80fc2455efc"
+    },
     "Matrix": {
       "Package": "Matrix",
       "Version": "1.6-1",
@@ -119,6 +137,13 @@
         "utils"
       ],
       "Hash": "0df0f73e8b5620605e09f2324a800754"
+    },
+    "RcppProgress": {
+      "Package": "RcppProgress",
+      "Version": "0.4.2",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Hash": "1c0aa18b97e6aaa17f93b8b866c0ace5"
     },
     "StatMatch": {
       "Package": "StatMatch",
@@ -387,6 +412,20 @@
         "tibble"
       ],
       "Hash": "f61dbaec772ccd2e17705c1e872e9e7c"
+    },
+    "chk": {
+      "Package": "chk",
+      "Version": "0.9.0",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "lifecycle",
+        "methods",
+        "rlang",
+        "tools"
+      ],
+      "Hash": "bccdb88efae005f6b9785a5fdfaaeb16"
     },
     "chron": {
       "Package": "chron",

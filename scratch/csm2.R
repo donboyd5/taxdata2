@@ -5,8 +5,112 @@ source(here::here("r", "libraries.r"))
 library(Rcpp)
 library(optmatch)
 library(RANN)
+library(FNN) # get.knnx(data, query, k, algorithm)
 library(rlemon)
 # sourceCpp(here::here("cpp", "functions_matching.cpp"))
+
+
+# data<- query<- cbind(1:n, 1:n)
+# get.knnx(data, query, k=10, algorithm=c("kd_tree", "cover_tree", "CR", "brute"))
+
+n <- 20000 # 1a 107 seconds, 1b 214, 81 1c , 74 1d, 105 2a , 108 2b
+n2 <- 5000
+m <- 20 # number of x vars used in distance calc - no material impact on speed
+k <- round(n * .01) # for 20k, 20: time drops from 107 (10%0) to 33 (5%) to  (1%)
+
+data <- query <- matrix(rnorm(n*k), ncol=k)
+
+system.time(d1a <- get.knnx(data, query, k=k, algorithm="kd_tree")) # much faster than cover_tree
+system.time(d1b <- get.knnx(data, query, k=k, algorithm="cover_tree"))
+system.time(d1c <- get.knnx(data, query, k=k, algorithm="CR")) # DON'T USE - GIVES DIFFERENT INDEXES
+system.time(d1d <- get.knnx(data, query, k=k, algorithm="brute")) # fast, maybe best
+system.time(d2a <- nn2(data, query, k=k, eps=0.0)) # fast
+system.time(d2b <- nn2(data, query, k=k, eps=1e-5))
+
+d1a$nn.index[1:5, 1:5]
+d1b$nn.index[1:5, 1:5]
+d1c$nn.index[1:5, 1:5]
+d1d$nn.index[1:5, 1:5]
+
+d2a$nn.idx[1:5, 1:5]
+d2b$nn.idx[1:5, 1:5]
+
+d1a$nn.dist[1:5, 1:5]
+d1b$nn.dist[1:5, 1:5]
+d1c$nn.dist[1:5, 1:5]
+d1d$nn.dist[1:5, 1:5]
+
+d2a$nn.dist[1:5, 1:5]
+d2b$nn.dist[1:5, 1:5]
+
+# don't bother with fastknn - not maintained, based on ANN like other packages
+library(devtools)
+install_github("davpinto/fastknn")
+library(mlbench)
+library(caTools)
+library(fastknn)
+
+data(Ionosphere)
+
+x <- data.matrix(subset(Ionosphere, select = -Class))
+y <- Ionosphere$Class
+
+set.seed(2048)
+tr.idx <- which(sample.split(Y = y, SplitRatio = 0.7))
+x.tr <- x[tr.idx,]
+x.te <- x[-tr.idx,]
+y.tr <- y[tr.idx]
+y.te <- y[-tr.idx]
+
+knn.out <- fastknn(xtr = x.tr, ytr = y.tr, xte = x.te, k = 10)
+
+knn.out$class
+knn.out$prob
+
+
+
+# functions for file matching - temporary holding place ----
+
+matchab <- function(afile, bfile, idvar, wtvar, xvars, balance_weights=TRUE){
+  # create a node file
+  afile1 <- afile |> 
+    select(all_of(c(idvar, wtvar, xvars))) |> 
+    rename(id = !!as.symbol(idvar),
+           weight = !!as.symbol(wtvar)) |>
+    mutate(file="A",
+           arow=row_number(),
+           node=row_number(),
+           weightadj=weight,
+           iweight1=round(weightadj) |> as.integer())
+  
+  bfile1 <- bfile |> 
+    select(all_of(c(idvar, wtvar, xvars))) |> 
+    rename(id = !!as.symbol(idvar),
+           weight = !!as.symbol(wtvar)) |>
+    mutate(file="B",
+           brow=row_number(),
+           node=row_number() + nrow(afile),
+           weightadj=weight * sum(afile[[wtvar]]) / sum(weight),
+           iweight1=round(weightadj) |> as.integer())
+  
+  print("balancing integer weights by adjusting bfile...")
+  awtsum <- sum(afile1$iweight1)
+  bwtsum <- sum(bfile1$iweight1)
+  diffba <- bwtsum - awtsum
+  addval <- case_when(diffba < 0 ~  1,
+                      diffba > 0 ~ -1,
+                      TRUE ~ 0)
+  
+  bfile1 <- bfile1 |> 
+    mutate(iweight1=ifelse(row_number() <= abs(diffba),
+                           iweight1 + addval,
+                           iweight1))
+  
+  return(bfile1)
+}
+
+df <- matchab(df1, df1 |> mutate(weight=weight + 1), idvar="recid", wtvar="weight", xvars=c("agi", "capgains", "socsec"))
+df
 
 # get data ----
 # draw two similar subsets of the puf
@@ -738,4 +842,136 @@ sum(bdf$weightb)
 # weights, all records are used in the match. One possible disadvantage of using all the records to
 # perform the match is that some records might be matched despite having a large difference
 # between the predicted values of taxable income in each of the files. 
+
+# https://cran.r-project.org/web/packages/MatchIt/vignettes/MatchIt.html
+
+library(MatchIt)
+
+data(lalonde)
+
+vignette("matching-methods")
+vignette("assessing-balance")
+vignette("estimating-effects")
+vignette("sampling-weights")
+
+# Generalized Full Matching (method = "quick")
+#  ?method_quick
+
+# Generalize full PS matching
+m.out1 <- matchit(treat ~ age + educ + race + nodegree +
+                    married + re74 + re75, data = lalonde,
+                  method = "quick")
+m.out1
+summary(m.out1)
+str(m.out1)
+str(m.out1$subclass)
+levels(m.out1$subclass)
+labels(m.out1$subclass)
+
+tibble(labs=labels(m.out1$subclass)) |> 
+  count(labs, sort=TRUE)
+
+
+library(quickmatch)
+# https://cran.r-project.org/web/packages/quickmatch/index.html
+
+
+
+lalonde_matchit_nn <-
+  matchit(
+    treat ~ age + educ + black + hispan + nodegree + married + re74 + re75,
+    baseline.group = 1,
+    data = lalonde,
+    method = "nearest",
+    distance = "mahalanobis",
+    subclass = T
+  )
+
+
+# Load package
+library("quickmatch")
+
+# Construct example data
+my_data <- data.frame(y = rnorm(100),
+                      x1 = runif(100),
+                      x2 = runif(100),
+                      treatment = factor(sample(rep(c("T", "C"), c(25, 75)))))
+
+# Make distances
+my_distances <- distances(my_data, dist_variables = c("x1", "x2"))
+
+### Average treatment effect (ATE)
+
+# Make matching
+my_matching_ate <- quickmatch(my_distances, my_data$treatment)
+
+# Covariate balance
+covariate_balance(my_data$treatment, my_data[c("x1", "x2")], my_matching_ate)
+
+# Estimate effect
+lm_match(my_data$y, my_data$treatment, my_matching_ate)
+
+
+### Average treatment effect of the treated (ATT)
+
+# Make matching
+my_matching_att <- quickmatch(my_distances, my_data$treatment, target = "T")
+
+# Covariate balance
+covariate_balance(my_data$treatment, my_data[c("x1", "x2")], my_matching_att, target = "T")
+
+# Estimate effect
+lm_match(my_data$y, my_data$treatment, my_matching_att, target = "T")
+
+
+# https://stackoverflow.com/questions/63242715/nearest-neighbor-matching-with-the-mahalanobis-distance-in-r
+
+# I would like to use the MatchIt package in R to perform nearest neighbor
+# matching using the Mahalanobis distance withing some caliper. Which of the
+# following two parameters of the matchit function that are related to the
+# Mahalanobis distance should I use:
+   
+#   the distance="mahalanobis" param, or
+#   the mahvars param (e.g., mahvars = c("X1", "X2")?
+# What's the difference between the two?
+
+# The documentation is terse about this (see pages 16 and 19): https://imai.fas.harvard.edu/research/files/matchit.pdf.
+
+# You should use the latter. You need the distance argument to identify the
+# propensity score that will be used to form the caliper. Setting mahvars will
+# perform Mahalanobis distance matching on the mahvars variables, and the
+# propensity score will be estimated based on the variables in the main formula.
+# The caliper argument can then be specified, which defines the width of the
+# caliper in units of the standard deviation of the propensity score.
+
+# From https://cran.r-project.org/web/packages/MatchIt/vignettes/matching-methods.html:
+# https://kosukeimai.github.io/MatchIt/reference/match.data.html
+
+# Setting the distance="mahalanobis" and method="nearest" make MatchIt to run
+# Nearest-neighbour matching with the Mahalanobis distance, without the
+# consideration of the propensity score. And the covariates supplied in the main
+# formula are used.
+
+library(MatchIt)
+data(lalonde)
+glimpse(lalonde)
+
+m.out1 <- matchit(treat ~ age + educ + married +
+                    race + nodegree + re74 + re75,
+                  data = lalonde, replace = TRUE,
+                  caliper = .05, ratio = 4)
+
+m.data1 <- match.data(m.out1, data = lalonde,
+                      distance = "prop.score")
+
+glimpse(m.data1)
+
+g.matches1 <- get_matches(m.out1, data = lalonde,
+                          distance = "prop.score")
+
+dim(g.matches1) #multiple rows per matched unit
+
+glimpse(g.matches1)
+
+# https://github.com/kosukeimai/MatchIt/blob/master/src/nn_matchC.cpp
 
