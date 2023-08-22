@@ -105,7 +105,7 @@ afile <- dfx |>
 bfile <- dfx |> 
   filter(row_number() %in% (na + 1):(na + nb))
 
-get_distances <- function(afile, bfile){
+get_distances <- function(afile, bfile, xvars){
   maxrecs <- max(nrow(afile), nrow(bfile))
   minrecs <- min(nrow(afile), nrow(bfile))
   k = round(maxrecs) * .1
@@ -114,18 +114,78 @@ get_distances <- function(afile, bfile){
   k <- min(k, minrecs) # but k cannot be less than the number of rows in the shorter file 
   print(paste0("k: ", k))
   
+  # scale to mean=0, sd=1 and compute distances
+  
   # distances for donating from file b to file a
-  dbtoa <- get.knnx(afile |> select(!!xvars),
-                    bfile |> select(!!xvars),
+  dbtoa <- get.knnx(afile |> select(all_of(xvars)) |> scale(),
+                    bfile |> select(all_of(xvars)) |> scale(),
                     k=k, algorithm="brute")
   
   # distances for donating from file a to file b
-  datob <- get.knnx(bfile |> select(!!xvars),
-                    afile |> select(!!xvars),
+  datob <- get.knnx(bfile |> select(!!xvars) |> scale(), 
+                    afile |> select(!!xvars) |> scale(),
                     k=k, algorithm="brute")
   
   return(list(dbtoa=dbtoa, datob=datob))
 }
+
+get_arcs <- function(dbtoa, datob){
+  # arcs: all demands, nearest neighbor supply indexes (supply to demand -- stod)
+  dbtoa_idx <- as_tibble(dbtoa$nn.index, .name_repair="unique") |> 
+    mutate(arow=row_number()) |> 
+    pivot_longer(-arow, names_to = "neighbor", values_to = "brow")
+  
+  dbtoa_dist <- as_tibble(dbtoa$nn.dist, .name_repair="unique") |> 
+    mutate(arow=row_number()) |> 
+    pivot_longer(-arow, names_to = "neighbor", values_to = "dist")
+  
+  dbtoa_arcs <- left_join(dbtoa_idx, dbtoa_dist, by = join_by(arow, neighbor)) |> 
+    mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
+  # dbtoa_arcs
+  
+  # arcs: all supplies, nearest neighbor demand indexes
+  datob_idx <- as_tibble(datob$nn.index, .name_repair="unique") |> 
+    mutate(brow=row_number()) |> 
+    pivot_longer(-brow, names_to = "neighbor", values_to = "arow")
+  
+  datob_dist <- as_tibble(datob$nn.dist, .name_repair="unique") |> 
+    mutate(brow=row_number()) |> 
+    pivot_longer(-brow, names_to = "neighbor", values_to = "dist")
+  
+  datob_arcs <- left_join(datob_idx, datob_dist, by = join_by(brow, neighbor)) |> 
+    mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
+  # datob_arcs
+  
+  # arcs: combine and keep unique arcs
+  arcs1 <- bind_rows(dbtoa_arcs, datob_arcs)
+  
+  arcs1 <- arcs1 |> 
+    select(-neighbor) |> 
+    distinct()
+  
+  arcs <- arcs1 |> 
+    left_join(nodes |> filter(ab=="") |> select(dnode=node, drow=sdrow), by = join_by(drow)) |> 
+    left_join(nodes |> filter(suppdem=="supply") |> select(snode=node, srow=sdrow), by = join_by(srow)) |> 
+    select(snode, dnode, srow, drow, dist) |> 
+    mutate(dist=as.integer(dist)) |> 
+    arrange(snode, dnode)
+  
+  return(arcs)
+}
+
+get_nodes <- function(afile, bfile){
+  nodes <- bind_rows(afile |> 
+                       select(id, node, abrow=arow, weight, weightadj, iweight) |> 
+                       mutate(ab="a",
+                              supply=iweight),
+                     bfile |> 
+                       select(id, node, abrow=brow, weight, weightadj, iweight) |> 
+                       mutate(ab="b",
+                              supply=-iweight)) |> 
+    select(id, node, ab, abrow, everything())
+  return(nodes)
+}
+  
 
 
 matchab <- function(afile, bfile, idvar, wtvar, xvars, balance_weights=TRUE){
@@ -154,30 +214,31 @@ matchab <- function(afile, bfile, idvar, wtvar, xvars, balance_weights=TRUE){
   awtsum <- sum(afile1$iweight)
   bwtsum <- sum(bfile1$iweight)
   diffba <- bwtsum - awtsum
+  
   addval <- case_when(diffba < 0 ~  1,
                       diffba > 0 ~ -1,
                       TRUE ~ 0)
   
   bfile1 <- bfile1 |> 
-    mutate(weight=ifelse(row_number() <= abs(diffba),
-                           weight + addval,
-                           weight))
+    mutate(iweight=ifelse(row_number() <= abs(diffba),
+                           iweight + addval,
+                           iweight))
   
   # get distances
   print("getting ab and ba distances and selecting unique combinations...")
-  dists <- get_distances(afile1, bfile1)
-
+  dists <- get_distances(afile1, bfile1, xvars)
   
-  # nodes <- bind_rows() |> 
-  #   mutate(supply=ifelse(suppdem=="supply", iweight, -iweight1))
-  # sum(nodes$supply)
+  nodes <- get_nodes(afile1, bfile1)
+  arcs <- get_arcs(dists$dbtoa, dists$datob)
   
-  return(list(a=afile1, b=bfile1, dists=dists))
+  return(arcs)
 }
 
 
 ldf <- matchab(afile, bfile |> mutate(weight=weight + 1), idvar="recid", wtvar="weight", xvars=c("agi", "capgains", "socsec"))
 ldf
+
+sum(ldf$supply)
 
 ldf$a
 ldf$b
