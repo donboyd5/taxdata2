@@ -1,100 +1,71 @@
 
 source(here::here("r", "libraries.r"))
+source(here::here("r", "functions_mincost.r"))
 # source(here::here("r", "functions.r"))
 # source(here::here("r", "constants.r"))
-library(Rcpp)
-library(optmatch)
-library(RANN)
-library(FNN) # get.knnx(data, query, k, algorithm)
-library(rlemon)
+# library(Rcpp)
+# library(optmatch)
+# library(RANN)
+# library(FNN) # get.knnx(data, query, k, algorithm)
+# library(rlemon)
+
 # sourceCpp(here::here("cpp", "functions_matching.cpp"))
 
+# make pums testdata ----
 
-# test knn speed ----
+library(tidycensus)
+pums_vars_2018 <- pums_variables |> 
+  filter(year == 2018, survey == "acs1")
 
-# CONCLUSIONS:
-#   d1d <- get.knnx(data, query, k=k, algorithm="brute") from FNN is fastest and best
-#   n2 (fileb) small has a big impact
-#   m # xvars small also big impact
-#   k small also has a big impact
-#   20k n, 5k n2, 10 m, k 10% solves in < 2 seconds -- reasonable real-world parameters
-#   20k, 5k is 2x faster than 5k, 20k and MUCH faster if k is % of 20k the RHS file
+vars <- pums_vars_2018 |> 
+  filter(level=="person") |> 
+  distinct(var_code, var_label, data_type)
 
-# data<- query<- cbind(1:n, 1:n)
-# get.knnx(data, query, k=10, algorithm=c("kd_tree", "cover_tree", "CR", "brute"))
+testdata <- get_pums(
+  variables = c("SEX", "MAR", "AGEP", "WKHP", "PINCP", "WAGP", "INTP", "SSP", "SSIP", "RETP", "SEMP"),
+  state = "MA",
+  survey = "acs1",
+  year = 2021
+)
 
-n <- 20000 # 1a 107 seconds, 1b 214, 81 1c , 74 1d, 105 2a , 108 2b
-n2 <- 5000
-m <- 10 # number of x vars used in distance calc - no material impact on speed
-k <- round(n2 * .1) # for 20k, 20: time drops from 107 (10%) to 33 (5%) to  (1%)
+count(testdata, SEX) # 1 male, 2 female
+count(testdata, MAR) # 1=married
 
-set.seed(123)
-data <- matrix(rnorm(n*m), ncol=m)
-query <- matrix(rnorm(n2*m), ncol=m)
+td2 <- testdata |> 
+  lcnames() |> 
+  filter(sex==1, mar==1, agep %in% 18:80) |> 
+  select(idnum=serialno, weight=pwgtp, age=agep, hoursworked=wkhp,
+         income=pincp, wages=wagp, interest=intp, socsec=ssp, pension=retp, selfemploy=semp)
+quantile(td2$age)
 
-system.time(d1a <- get.knnx(data, query, k=k, algorithm="kd_tree")) # much faster than cover_tree when good; seems to hang sometimes
-system.time(d1b <- get.knnx(data, query, k=k, algorithm="cover_tree"))
-system.time(d1c <- get.knnx(data, query, k=k, algorithm="CR")) # DON'T USE - GIVES DIFFERENT INDEXES
-system.time(d1d <- get.knnx(data, query, k=k, algorithm="brute")) # fast, maybe BEST
-k2 <- round(n * .1) 
-k2 <- 500
-system.time(d1e <- get.knnx(query, data, k=k2, algorithm="brute")) # query, data about 2x as long as data, query, MUCH longer if we change k!!!
-system.time(d2a <- nn2(data, query, k=k, eps=0.0)) # fast
-system.time(d2b <- nn2(data, query, k=k, eps=1e-5))
+idvars <- c("idnum", "weight")
+xvars <- c("age", "hoursworked", "income")
+yvars <- c("socsec", "selfemploy")
+zvars <- c("interest", "pension", "wages")
 
-d1a$nn.index[1:5, 1:5]
-d1b$nn.index[1:5, 1:5]
-d1c$nn.index[1:5, 1:5]
-d1d$nn.index[1:5, 1:5]
+test_afile <- td2 |> 
+  sample_n(10000) |> 
+  select(all_of(c(idvars, xvars, yvars)))
 
-d2a$nn.idx[1:5, 1:5]
-d2b$nn.idx[1:5, 1:5]
+test_bfile <- td2 |> 
+  filter(!idnum %in% test_afile$idnum) |> 
+  select(all_of(c(idvars, xvars, zvars))) |> 
+  mutate(weight=weight * sum(test_afile$weight) / sum(weight))
 
-d1a$nn.dist[1:5, 1:5]
-d1b$nn.dist[1:5, 1:5]
-d1c$nn.dist[1:5, 1:5]
-d1d$nn.dist[1:5, 1:5]
+sum(test_afile$weight)
+sum(test_bfile$weight)
 
-tmp <- d1e$nn.dist
-tmp[1, ]
-plot(tmp[100, ])
-
-d2a$nn.dist[1:5, 1:5]
-d2b$nn.dist[1:5, 1:5]
-
-# don't bother with fastknn - not maintained, based on ANN like other packages
-library(devtools)
-install_github("davpinto/fastknn")
-library(mlbench)
-library(caTools)
-library(fastknn)
-
-data(Ionosphere)
-
-x <- data.matrix(subset(Ionosphere, select = -Class))
-y <- Ionosphere$Class
-
-set.seed(2048)
-tr.idx <- which(sample.split(Y = y, SplitRatio = 0.7))
-x.tr <- x[tr.idx,]
-x.te <- x[-tr.idx,]
-y.tr <- y[tr.idx]
-y.te <- y[-tr.idx]
-
-knn.out <- fastknn(xtr = x.tr, ytr = y.tr, xte = x.te, k = 10)
-
-knn.out$class
-knn.out$prob
+glimpse(test_afile)
+glimpse(test_bfile)
 
 
+# start file matching ----
 
-# functions for file matching - temporary holding place ----
-
-na <- 4000
-nb <- 3000
+na <- 15000
+nb <- 5000
 
 dfx <- dfa |> 
-  filter(mars==2, e00100>=25e3, e00100<50e3) |> 
+  filter(mars==2, e00100>=25e3, e00100<150e3) |> 
   sample_n(na + nb) |> 
   select(recid, weight, agi=e00100, wages=e00200, interest=e00300, dividends=e00600, businc=e00900, capgains=e01000, socsec=e02400) 
 glimpse(dfx)
@@ -105,166 +76,65 @@ afile <- dfx |>
 bfile <- dfx |> 
   filter(row_number() %in% (na + 1):(na + nb))
 
-
-
-
-get_distances <- function(afile, bfile, xvars){
-  maxrecs <- max(nrow(afile), nrow(bfile))
-  minrecs <- min(nrow(afile), nrow(bfile))
-  k = round(maxrecs) * .1
-  k <- min(k, 1000) # k can never be more than 1000
-  k <- max(k, 10) # k always must be at least 10
-  k <- min(k, minrecs) # but k cannot be less than the number of rows in the shorter file 
-  print(paste0("k: ", k))
-  
-  # scale to mean=0, sd=1 and compute distances
-  
-  # distances for donating from file b to file a
-  dbtoa <- get.knnx(afile |> select(all_of(xvars)) |> scale(),
-                    bfile |> select(all_of(xvars)) |> scale(),
-                    k=k, algorithm="brute")
-  
-  # distances for donating from file a to file b
-  datob <- get.knnx(bfile |> select(!!xvars) |> scale(), 
-                    afile |> select(!!xvars) |> scale(),
-                    k=k, algorithm="brute")
-  
-  return(list(dbtoa=dbtoa, datob=datob))
-}
-
-
-get_nodes <- function(afile, bfile){
-  nodes <- bind_rows(afile |> 
-                       select(id, node, abrow=arow, weight, weightadj, iweight) |> 
-                       mutate(file="A",
-                              supply=-iweight),
-                     bfile |> 
-                       select(id, node, abrow=brow, weight, weightadj, iweight) |> 
-                       mutate(file="B",
-                              supply=iweight)) |> 
-    select(id, node, file, abrow, everything())
-  return(nodes)
-}
-
-
-get_arcs <- function(dbtoa, datob, nodes){
-  # arcs: all demands, nearest neighbor supply indexes (supply to demand -- stod)
-  dbtoa_idx <- as_tibble(dbtoa$nn.index, .name_repair="unique") |> 
-    mutate(brow=row_number()) |> 
-    pivot_longer(-brow, names_to = "neighbor", values_to = "arow")
-  
-  dbtoa_dist <- as_tibble(dbtoa$nn.dist, .name_repair="unique") |> 
-    mutate(brow=row_number()) |> 
-    pivot_longer(-brow, names_to = "neighbor", values_to = "dist")
-  
-  dbtoa_arcs <- left_join(dbtoa_idx, dbtoa_dist, by = join_by(brow, neighbor)) |> 
-    mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
-  # dbtoa_arcs
-  
-  # arcs: all supplies, nearest neighbor demand indexes
-  datob_idx <- as_tibble(datob$nn.index, .name_repair="unique") |> 
-    mutate(arow=row_number()) |> 
-    pivot_longer(-arow, names_to = "neighbor", values_to = "brow")
-  
-  datob_dist <- as_tibble(datob$nn.dist, .name_repair="unique") |> 
-    mutate(arow=row_number()) |> 
-    pivot_longer(-arow, names_to = "neighbor", values_to = "dist")
-  
-  datob_arcs <- left_join(datob_idx, datob_dist, by = join_by(arow, neighbor)) |> 
-    mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
-  # datob_arcs
-  
-  # arcs: combine and keep unique arcs
-  arcs1 <- bind_rows(dbtoa_arcs, datob_arcs)
-  
-  arcs1 <- arcs1 |> 
-    select(-neighbor) |> 
-    distinct()
-  
-  arcs <- arcs1 |> 
-    left_join(nodes |> filter(file=="B") |> select(bnode=node, brow=abrow), by = join_by(brow)) |> 
-    left_join(nodes |> filter(file=="A") |> select(anode=node, arow=abrow), by = join_by(arow)) |> 
-    select(anode, bnode, arow, brow, dist) |> 
-    mutate(dist=as.integer(dist*1000.)) |> 
-    arrange(anode, bnode)
-  
-  return(arcs)
-}
-
-
-  
-idvar <- "recid"; wtvar <- "weight"; xvars <- c("agi", "capgains", "socsec")
-
-
-matchab <- function(afile, bfile, idvar, wtvar, xvars, balance_weights=TRUE){
-  # flows are from B to A
-  # create a node file
-  afile1 <- afile |> 
-    select(all_of(c(idvar, wtvar, xvars))) |> 
-    rename(id = !!as.symbol(idvar),
-           weight = !!as.symbol(wtvar)) |>
-    mutate(file="A",
-           arow=row_number(),
-           node=row_number(),
-           weightadj=weight,
-           iweight=round(weightadj) |> as.integer())
-  
-  bfile1 <- bfile |> 
-    select(all_of(c(idvar, wtvar, xvars))) |> 
-    rename(id = !!as.symbol(idvar),
-           weight = !!as.symbol(wtvar)) |>
-    mutate(file="B",
-           brow=row_number(),
-           node=row_number() + nrow(afile),
-           weightadj=weight * sum(afile[[wtvar]]) / sum(weight),
-           iweight=round(weightadj) |> as.integer())
-  
-  print("balancing integer weights by adjusting bfile...")
-  awtsum <- sum(afile1$iweight)
-  bwtsum <- sum(bfile1$iweight)
-  diffba <- bwtsum - awtsum
-  
-  addval <- case_when(diffba < 0 ~  1,
-                      diffba > 0 ~ -1,
-                      TRUE ~ 0)
-  
-  bfile1 <- bfile1 |> 
-    mutate(iweight=ifelse(row_number() <= abs(diffba),
-                           iweight + addval,
-                           iweight))
-  
-  # get distances
-  print("getting ab and ba distances and selecting unique combinations...")
-  dists <- get_distances(afile1, bfile1, xvars)
-  
-  nodes <- get_nodes(afile1, bfile1)
-  arcs <- get_arcs(dists$dbtoa, dists$datob, nodes)
-  
-  return(list(nodes=nodes, arcs=arcs))
-}
-
 a <- proc.time()
-ldf <- matchab(afile, bfile |> mutate(weight=weight + 1), idvar="recid", wtvar="weight", xvars=c("agi", "capgains", "socsec"))
+ldf <- prepab(afile,
+               bfile,
+               idvar="recid", 
+               wtvar="weight", 
+               xvars=c("agi", "capgains", "socsec"),
+               k=100)
 b <- proc.time()
 b - a
-ldf
 
-ldf$nodes
-ldf$arcs
+res <- matchab(afile, bfile,
+                   idvar="recid",
+                   wtvar="weight", 
+                   xvars=c("agi", "capgains", "socsec"), k=100)
 
-sum(ldf$nodes$supply)
+str(res)
+tmp <- res$abfile
 
+
+rename(!!!setNames(paste0("a_", xvars), xvars))
+
+
+result <- get_abfile(afile, bfile,
+                   idvar="recid",
+                   wtvar="weight", 
+                   xvars=c("agi", "capgains", "socsec"), k=100)
+
+str(result)
+
+ab <- mac(res$prep_list$arcs, res$prep_list$nodes, res$mcfresult$flows, 
+                 afile=afile, bfile=bfile, idvar="recid", wtvar="weight", xvars=c("agi", "capgains", "socsec"))
+
+
+
+res <- get_mcflows(test_afile, test_afile,
+                   idvar="idnum",
+                   wtvar="weight", 
+                   xvars=xvars, k=100)
+
+res <- matchab(test_afile, test_bfile,
+               idvar="idnum",
+               wtvar="weight", 
+               xvars=xvars, k=100)
+
+str(res)
+tmp <- res$abfile
+
+res$mcfresult$feasibility
 
 a <- proc.time()
 res <- MinCostFlow(
-  # flows are from B to A -- B has supply nodes
+  # flows are from B to A -- B has supply nodes, A has demand nodes
   arcSources=ldf$arcs$bnode,
   arcTargets=ldf$arcs$anode,
   arcCapacities=rep(max(abs(ldf$nodes$supply)), nrow(ldf$arcs)),
   arcCosts=ldf$arcs$dist,
   nodeSupplies=ldf$nodes$supply,
   numNodes=nrow(ldf$nodes),
-  algorithm = "NetworkSimplex"
+  algorithm = "NetworkSimplex" # NetworkSimplex seems fastest for these problems
 )
 b <- proc.time()
 b - a
@@ -273,6 +143,7 @@ res$feasibility
 res$flows
 res$potentials
 res$cost
+number(res$cost)
 
 # put it together
 df <- ldf$arcs |> 
@@ -289,19 +160,22 @@ df <- ldf$arcs |>
   arrange(arow, brow)
 
 df |> 
-  summarise(flow=sum(flow), 
+  summarise(n=n(), 
+            flow=sum(flow), 
             aweight=first(aweight),
             .by=arow) |> 
   arrange(arow) |> 
   ht()
 
 df |> 
-  summarise(flow=sum(flow), 
+  summarise(n=n(),
+            flow=sum(flow), 
             bweight=first(bweight),
             .by=brow) |> 
   arrange(brow) |> 
   ht()
 
+# end file matching ----
 
 
 # get data ----
@@ -939,6 +813,82 @@ sum(bdf$weightb)
 
 # now do it with real data -----
 
+
+# test knn speed ----
+
+# CONCLUSIONS:
+#   d1d <- get.knnx(data, query, k=k, algorithm="brute") from FNN is fastest and best
+#   n2 (fileb) small has a big impact
+#   m # xvars small also big impact
+#   k small also has a big impact
+#   20k n, 5k n2, 10 m, k 10% solves in < 2 seconds -- reasonable real-world parameters
+#   20k, 5k is 2x faster than 5k, 20k and MUCH faster if k is % of 20k the RHS file
+
+# data<- query<- cbind(1:n, 1:n)
+# get.knnx(data, query, k=10, algorithm=c("kd_tree", "cover_tree", "CR", "brute"))
+
+n <- 20000 # 1a 107 seconds, 1b 214, 81 1c , 74 1d, 105 2a , 108 2b
+n2 <- 5000
+m <- 10 # number of x vars used in distance calc - no material impact on speed
+k <- round(n2 * .1) # for 20k, 20: time drops from 107 (10%) to 33 (5%) to  (1%)
+
+set.seed(123)
+data <- matrix(rnorm(n*m), ncol=m)
+query <- matrix(rnorm(n2*m), ncol=m)
+
+system.time(d1a <- get.knnx(data, query, k=k, algorithm="kd_tree")) # much faster than cover_tree when good; seems to hang sometimes
+system.time(d1b <- get.knnx(data, query, k=k, algorithm="cover_tree"))
+system.time(d1c <- get.knnx(data, query, k=k, algorithm="CR")) # DON'T USE - GIVES DIFFERENT INDEXES
+system.time(d1d <- get.knnx(data, query, k=k, algorithm="brute")) # fast, maybe BEST
+k2 <- round(n * .1) 
+k2 <- 500
+system.time(d1e <- get.knnx(query, data, k=k2, algorithm="brute")) # query, data about 2x as long as data, query, MUCH longer if we change k!!!
+system.time(d2a <- nn2(data, query, k=k, eps=0.0)) # fast
+system.time(d2b <- nn2(data, query, k=k, eps=1e-5))
+
+d1a$nn.index[1:5, 1:5]
+d1b$nn.index[1:5, 1:5]
+d1c$nn.index[1:5, 1:5]
+d1d$nn.index[1:5, 1:5]
+
+d2a$nn.idx[1:5, 1:5]
+d2b$nn.idx[1:5, 1:5]
+
+d1a$nn.dist[1:5, 1:5]
+d1b$nn.dist[1:5, 1:5]
+d1c$nn.dist[1:5, 1:5]
+d1d$nn.dist[1:5, 1:5]
+
+tmp <- d1e$nn.dist
+tmp[1, ]
+plot(tmp[100, ])
+
+d2a$nn.dist[1:5, 1:5]
+d2b$nn.dist[1:5, 1:5]
+
+# don't bother with fastknn - not maintained, based on ANN like other packages
+library(devtools)
+install_github("davpinto/fastknn")
+library(mlbench)
+library(caTools)
+library(fastknn)
+
+data(Ionosphere)
+
+x <- data.matrix(subset(Ionosphere, select = -Class))
+y <- Ionosphere$Class
+
+set.seed(2048)
+tr.idx <- which(sample.split(Y = y, SplitRatio = 0.7))
+x.tr <- x[tr.idx,]
+x.te <- x[-tr.idx,]
+y.tr <- y[tr.idx]
+y.te <- y[-tr.idx]
+
+knn.out <- fastknn(xtr = x.tr, ytr = y.tr, xte = x.te, k = 10)
+
+knn.out$class
+knn.out$prob
 
 
 # cppFunction('
