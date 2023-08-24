@@ -5,7 +5,6 @@
 #   rlemon
 
 
-
 get_distances <- function(afile, bfile, xvars, k=NULL){
 
   # determine how many near-neighbors to get, if not specified
@@ -45,10 +44,10 @@ get_nodes <- function(afile, bfile){
   nodes <- dplyr::bind_rows(
     afile |> 
       dplyr::select(id, node, abrow=arow, weight, weightadj, iweight) |> 
-      dplyr::mutate(file="A", supply=-iweight), # note the minus sign --- the A file receives weights
+      dplyr::mutate(file="A", supply=-iweight), # note the minus sign because the A file demands weights
     bfile |> 
       dplyr::select(id, node, abrow=brow, weight, weightadj, iweight) |> 
-      dplyr::mutate(file="B", supply=iweight)) |> # note the minus sign --- the A file receives weights
+      dplyr::mutate(file="B", supply=iweight)) |> # note NO minus sign because the B file supplies weights
     dplyr::select(id, node, file, abrow, everything())
   
   return(nodes)
@@ -56,7 +55,8 @@ get_nodes <- function(afile, bfile){
 
 
 get_arcs <- function(dbtoa, datob, nodes){
-  # arcs: all demands, nearest neighbor supply indexes (supply to demand -- stod)
+  # arcs: all demands, nearest neighbor supply indexes (supply to demand, i.e., b to a)
+  # suppress messages because as_tibble is verbose with the neighbor names created by get_knnx
   suppressMessages({
   dbtoa_idx <- tibble::as_tibble(dbtoa$nn.index, .name_repair="unique") |> 
     dplyr::mutate(brow=row_number()) |> 
@@ -73,7 +73,7 @@ get_arcs <- function(dbtoa, datob, nodes){
     dplyr::mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
   # dbtoa_arcs
   
-  # arcs: all supplies, nearest neighbor demand indexes
+  # arcs: all supplies, nearest neighbor demand indexes (a to b)
   suppressMessages({
   datob_idx <- as_tibble(datob$nn.index, .name_repair="unique") |> 
     dplyr::mutate(arow=row_number()) |> 
@@ -103,6 +103,12 @@ get_arcs <- function(dbtoa, datob, nodes){
     dplyr::left_join(nodes |> dplyr::filter(file=="A") |> dplyr::select(anode=node, arow=abrow), 
                      by = join_by(arow)) |> 
     dplyr::select(anode, bnode, arow, brow, dist) |> 
+    
+    # Convert distances, which are in standard deviation units because of scaling, 
+    # to integers because the minimum cost flow algorithms require integer inputs.
+    # Multiply by 100 to spread them out (otherwise we might have 0, 1, 2, 3 standard deviations)
+    # I use 100 rather than a larger number, to keep the costs relatively small because
+    # small costs to be important for minimum cost flow solvers.
     dplyr::mutate(dist=as.integer(dist*100.)) |> 
     dplyr::arrange(anode, bnode)
   
@@ -111,12 +117,23 @@ get_arcs <- function(dbtoa, datob, nodes){
 
 
 prepab <- function(afile, bfile, idvar, wtvar, xvars, k=NULL){
+  
   a <- proc.time()
+  
   # flows are from B to A
   # create a node file
+  awtsum <- sum(afile[[wtvar]])
+  bwtsum <- sum(bfile[[wtvar]])
+  abratio <- awtsum / bwtsum
+  print(paste0("ratio of sum of afile weights to bfile weights is: ", round(abratio, digits=3)))
+  print("bfile weights will be adjusted as needed so that bfile weight sum equals afile weight sum")
+  if(abratio < 0.75 || abratio > 1.25){
+    print("however, large difference in sums suggests caution needed")
+  }
+  
   afile1 <- afile |> 
     dplyr::select(all_of(c(idvar, wtvar, xvars))) |> 
-    dplyr::rename(id = !!as.symbol(idvar),
+    dplyr::rename(id = !!as.symbol(idvar), # investigate a consistent way of converting strings to symbols
            weight = !!as.symbol(wtvar)) |>
     dplyr::mutate(file="A",
            arow=row_number(),
@@ -154,6 +171,7 @@ prepab <- function(afile, bfile, idvar, wtvar, xvars, k=NULL){
   
   nodes <- get_nodes(afile1, bfile1)
   arcs <- get_arcs(dists$dbtoa, dists$datob, nodes)
+  
   b <- proc.time()
   preptime <- (b - a)[3]
   
@@ -161,14 +179,14 @@ prepab <- function(afile, bfile, idvar, wtvar, xvars, k=NULL){
 }
 
 
-get_abfile <- function(arcs, nodes, flows, afile, bfile, idvar, wtvar, xvars){
+get_abfile <- function(arcs, nodes, flows, afile, bfile, idvar, wtvar, xvars, yvars, zvars){
   
-  print("preparing base abfile with xvars from the afile")
-  print("merge with afile for yvars and with bfile for zvars")
-  print("merge on a_ and b_ followed by your id variable name and ...")
+  print("preparing base abfile...")
   abfile <- arcs |> 
     dplyr::mutate(weight=flows) |> 
-    dplyr::filter(weight > 0) |>  # important
+    dplyr::filter(weight > 0) |>  # drop potential matches that weren't used
+    
+    # get the id and weight variables for the a and b files
     dplyr::left_join(nodes |> 
                        dplyr::filter(file=="A") |> 
                        dplyr::select(aid=id, arow=abrow, a_weight=iweight),
@@ -177,27 +195,35 @@ get_abfile <- function(arcs, nodes, flows, afile, bfile, idvar, wtvar, xvars){
                        dplyr::filter(file=="B") |> 
                        dplyr::select(bid=id, brow=abrow, b_weight=iweight),
                      by = join_by(brow)) |> 
-    # convert the a and b id variavbles to user-recognizable names
+    
+    # convert the a and b id variable names to user-recognizable names
     dplyr::select(anode, bnode, aid, bid, a_weight, b_weight, dist, weight) |> 
     dplyr::rename(!!paste0("a_", idvar):=aid,
                   !!paste0("b_", idvar):=bid) |> 
+    
+    # bring in each file's xvars, plus the yvars from a and zvars from b
     left_join(afile |> 
-                select(-all_of(wtvar)) |> 
-                rename(!!paste0("a_", idvar):=!!sym(idvar)) |> 
-                rename(!!!setNames(xvars, paste0("a_", xvars))),
+                dplyr::select(-all_of(wtvar)) |> 
+                dplyr::rename(!!paste0("a_", idvar):=sym(idvar)) |> 
+                dplyr::rename(!!!setNames(xvars, paste0("a_", xvars))), # give afile xvars an a prefix - do I need this many !!! ?
               by=join_by(!!paste0("a_", idvar))) |> 
     left_join(bfile |> 
-                select(-all_of(wtvar)) |> 
-                rename(!!paste0("b_", idvar):=!!sym(idvar)) |> 
-                rename(!!!setNames(xvars, paste0("b_", xvars))),
+                dplyr::select(-all_of(wtvar)) |> 
+                dplyr::rename(!!paste0("b_", idvar):=sym(idvar)) |> 
+                dplyr::rename(!!!setNames(xvars, paste0("b_", xvars))), # give bfile xvars a b prefix
               by=join_by(!!paste0("b_", idvar))) |> 
+    
+    # move variables around so that it is easier visually to compare the afile xvars to the bfile xvars
+    dplyr::relocate(dist, .after=sym(paste0("b_", idvar))) |>  
+    dplyr::relocate(all_of(yvars), .after = last_col()) |> 
+    dplyr::relocate(all_of(zvars), .after = last_col()) |> 
     dplyr::arrange(anode, dist)
   
   return(abfile)
 }
 
 
-matchab <- function(afile, bfile, idvar, wtvar, xvars, k=NULL){
+matchab <- function(afile, bfile, idvar, wtvar, xvars, yvars, zvars, k=NULL){
   
   print("preparing nodes and arcs...")
   prep_list <- prepab(afile,
@@ -225,10 +251,11 @@ matchab <- function(afile, bfile, idvar, wtvar, xvars, k=NULL){
   print(paste0("# seconds to solve minimum cost flow problem: ", round(mcfresult$mcftime, 3)))
   print(paste0("Solution status: ", mcfresult$feasibility))
   
-  abfile <- get_abfile(res$prep_list$arcs, 
-                       res$prep_list$nodes, 
-                       mcfresult$flows, 
-                       afile=afile, bfile=bfile, idvar=idvar, wtvar=wtvar, xvars=xvars)
+  abfile <- get_abfile(arcs=prep_list$arcs, 
+                       nodes=prep_list$nodes, 
+                       flows=mcfresult$flows, 
+                       afile=afile, bfile=bfile, idvar=idvar, wtvar=wtvar,
+                       xvars=xvars, yvars=yvars, zvars=zvars)
   
   return(list(prep_list=prep_list, mcfresult=mcfresult, abfile=abfile))
 }

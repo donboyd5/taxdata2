@@ -14,10 +14,10 @@ source(here::here("r", "functions_mincost.r"))
 # make pums testdata ----
 
 library(tidycensus)
-pums_vars_2018 <- pums_variables |> 
-  filter(year == 2018, survey == "acs1")
+pvars2021 <- pums_variables |> 
+  filter(year == 2021, survey == "acs1")
 
-vars <- pums_vars_2018 |> 
+vars <- pvars2021 |> 
   filter(level=="person") |> 
   distinct(var_code, var_label, data_type)
 
@@ -34,21 +34,24 @@ count(testdata, MAR) # 1=married
 td2 <- testdata |> 
   lcnames() |> 
   filter(sex==1, mar==1, agep %in% 18:80) |> 
-  select(idnum=serialno, weight=pwgtp, age=agep, hoursworked=wkhp,
+  mutate(pid=paste0(serialno, sporder)) |> 
+  select(pid, weight=pwgtp, age=agep, hoursworked=wkhp,
          income=pincp, wages=wagp, interest=intp, socsec=ssp, pension=retp, selfemploy=semp)
 quantile(td2$age)
+anyDuplicated(td2$pid)
 
-idvars <- c("idnum", "weight")
+idvars <- c("pid", "weight")
 xvars <- c("age", "hoursworked", "income")
 yvars <- c("socsec", "selfemploy")
 zvars <- c("interest", "pension", "wages")
 
+set.seed(1234)
 test_afile <- td2 |> 
   sample_n(10000) |> 
   select(all_of(c(idvars, xvars, yvars)))
 
 test_bfile <- td2 |> 
-  filter(!idnum %in% test_afile$idnum) |> 
+  filter(!pid %in% test_afile$pid) |> 
   select(all_of(c(idvars, xvars, zvars))) |> 
   mutate(weight=weight * sum(test_afile$weight) / sum(weight))
 
@@ -58,6 +61,8 @@ sum(test_bfile$weight)
 glimpse(test_afile)
 glimpse(test_bfile)
 
+saveRDS(test_afile, here::here("data", "test_afile.rds"))
+saveRDS(test_bfile, here::here("data", "test_bfile.rds"))
 
 # start file matching ----
 
@@ -109,19 +114,73 @@ ab <- mac(res$prep_list$arcs, res$prep_list$nodes, res$mcfresult$flows,
                  afile=afile, bfile=bfile, idvar="recid", wtvar="weight", xvars=c("agi", "capgains", "socsec"))
 
 
+# match acs test files ----
+library(tidyverse)
+library(FNN) # get.knnx(data, query, k, algorithm)
+library(rlemon)
 
-res <- get_mcflows(test_afile, test_afile,
-                   idvar="idnum",
-                   wtvar="weight", 
-                   xvars=xvars, k=100)
+source(here::here("r", "functions_mincost.r"))
 
-res <- matchab(test_afile, test_bfile,
-               idvar="idnum",
+afile <- readRDS(here::here("data", "test_afile.rds"))
+bfile <- readRDS(here::here("data", "test_bfile.rds"))
+
+idvars <- c("pid", "weight")
+xvars <- c("age", "hoursworked", "income")
+yvars <- c("socsec", "selfemploy") # different kinds of income
+zvars <- c("interest", "pension", "wages") # different kinds of income
+
+glimpse(afile) # idvars, xvars, yvars
+glimpse(bfile) # idvars, xvars, zvars
+
+# make sure neither file has duplicated ids
+anyDuplicated(afile$pid)
+anyDuplicated(bfile$pid)
+
+# are sums of file weights reasonably close?
+sum(afile$weight) / sum(bfile$weight)
+
+# to help us choose k
+nrow(afile); nrow(bfile) 
+# k=100 seems to be reasonably good much of the time
+# this allows each afile record to be matched to up to 100 of its nearest bfile neighbors
+# and the same for each bfile record
+
+res <- matchab(afile=test_afile, 
+               bfile=test_bfile,
+               idvar="pid",
                wtvar="weight", 
-               xvars=xvars, k=100)
+               xvars=xvars,
+               yvars=yvars,
+               zvars=zvars,
+               k=100)
 
 str(res)
-tmp <- res$abfile
+res$mcfresult$cost
+res$prep_list$arcs # this shows all of the allowable a-b matches; only some will have been selected
+
+# check that the weights for all split people sum to the given weight (as adjusted)
+ab <- res$abfile 
+ab |> 
+  summarise(n=n(), a_weight=first(a_weight), weight=sum(weight), .by=a_pid) |> 
+  mutate(diff=a_weight - weight) |> 
+  arrange(desc(abs(diff)), desc(n))
+
+ab |> 
+  summarise(n=n(), b_weight=first(b_weight), weight=sum(weight), .by=b_pid) |> 
+  mutate(diff=b_weight - weight) |> 
+  arrange(desc(abs(diff)), desc(n))
+
+
+
+# ?tidyselect::faq-selection-context
+idvar <- "pid"
+tmp2 <- tmp |> 
+  # relocate(dist, .after=b_pid) |> 
+  # relocate(dist, .after=all_of(paste0("b_", idvar))) |>
+  relocate(dist, .after=sym(paste0("b_", idvar))) |> 
+  relocate(all_of(yvars), .after = last_col()) |> 
+  relocate(all_of(zvars), .after = last_col())
+glimpse(tmp2)
 
 res$mcfresult$feasibility
 
