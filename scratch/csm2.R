@@ -121,6 +121,9 @@ library(rlemon)
 
 source(here::here("r", "functions_mincost.r"))
 
+# two random selections of records from American Community Survey in 2021
+# Massachusetts, male, married, ages 18-80
+# 10k records in afile, 4.3k records in bfile
 afile <- readRDS(here::here("data", "test_afile.rds"))
 bfile <- readRDS(here::here("data", "test_bfile.rds"))
 
@@ -145,8 +148,8 @@ nrow(afile); nrow(bfile)
 # this allows each afile record to be matched to up to 100 of its nearest bfile neighbors
 # and the same for each bfile record
 
-res <- matchab(afile=test_afile, 
-               bfile=test_bfile,
+res <- matchab(afile=afile, 
+               bfile=bfile,
                idvar="pid",
                wtvar="weight", 
                xvars=xvars,
@@ -158,7 +161,7 @@ str(res)
 res$mcfresult$cost
 res$prep_list$arcs # this shows all of the allowable a-b matches; only some will have been selected
 
-# check that the weights for all split people sum to the given weight (as adjusted)
+# check that the weights for all split people sum to the full person weight (as adjusted)
 ab <- res$abfile 
 ab |> 
   summarise(n=n(), a_weight=first(a_weight), weight=sum(weight), .by=a_pid) |> 
@@ -170,69 +173,17 @@ ab |>
   mutate(diff=b_weight - weight) |> 
   arrange(desc(abs(diff)), desc(n))
 
+# how far did we have to go to get matches, and what were their distances?
+quantile(ab$neighbor, probs=c(0, .25, .5, .75, .9, .95, .99, 1))
 
-
-# ?tidyselect::faq-selection-context
-idvar <- "pid"
-tmp2 <- tmp |> 
-  # relocate(dist, .after=b_pid) |> 
-  # relocate(dist, .after=all_of(paste0("b_", idvar))) |>
-  relocate(dist, .after=sym(paste0("b_", idvar))) |> 
-  relocate(all_of(yvars), .after = last_col()) |> 
-  relocate(all_of(zvars), .after = last_col())
-glimpse(tmp2)
-
-res$mcfresult$feasibility
-
-a <- proc.time()
-res <- MinCostFlow(
-  # flows are from B to A -- B has supply nodes, A has demand nodes
-  arcSources=ldf$arcs$bnode,
-  arcTargets=ldf$arcs$anode,
-  arcCapacities=rep(max(abs(ldf$nodes$supply)), nrow(ldf$arcs)),
-  arcCosts=ldf$arcs$dist,
-  nodeSupplies=ldf$nodes$supply,
-  numNodes=nrow(ldf$nodes),
-  algorithm = "NetworkSimplex" # NetworkSimplex seems fastest for these problems
-)
-b <- proc.time()
-b - a
-
-res$feasibility
-res$flows
-res$potentials
-res$cost
-number(res$cost)
-
-# put it together
-df <- ldf$arcs |> 
-  mutate(flow=res$flows) |> 
-  filter(flow > 0) |>  # important
-  left_join(ldf$nodes |> 
-              filter(file=="A") |> 
-              select(arow=abrow, aweight=iweight),
-            by = join_by(arow)) |> 
-  left_join(ldf$nodes |> 
-              filter(file=="B") |> 
-              select(brow=abrow, bweight=iweight),
-            by = join_by(brow)) |> 
-  arrange(arow, brow)
-
-df |> 
-  summarise(n=n(), 
-            flow=sum(flow), 
-            aweight=first(aweight),
-            .by=arow) |> 
-  arrange(arow) |> 
-  ht()
-
-df |> 
+ab |> 
   summarise(n=n(),
-            flow=sum(flow), 
-            bweight=first(bweight),
-            .by=brow) |> 
-  arrange(brow) |> 
-  ht()
+            dist=mean(dist),
+            .by=neighbor) |> 
+  arrange(neighbor) |> 
+  mutate(pct=n / sum(n),
+         cumpct=cumsum(pct)) |> 
+  filter(cumpct <= .9)
 
 # end file matching ----
 

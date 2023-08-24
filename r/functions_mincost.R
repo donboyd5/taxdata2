@@ -24,16 +24,20 @@ get_distances <- function(afile, bfile, xvars, k=NULL){
     #   arcs from each B record to k A records, 
     #   arcs from each A record to k B records
     # this does not guarantee feasibility but should help
+
   
   # k nearest distances for donating from file B to file A (dbtoa)
-  dbtoa <- FNN::get.knnx(afile |> dplyr::select(all_of(xvars)) |> scale(), # scale to mean=0, sd=1 and compute distances
-                    bfile |> dplyr::select(all_of(xvars)) |> scale(),
-                    k=k, algorithm="brute") # brute is fastest algorithm based on testing
+  # result matrices have same # rows as afile
+  dbtoa <- FNN::get.knnx(bfile |> dplyr::select(!!xvars) |> scale(), 
+                         afile |> dplyr::select(!!xvars) |> scale(),
+                         k=k, algorithm="brute")    
   
   # k nearest distances for donating from file A to file B (datob)
-  datob <- FNN::get.knnx(bfile |> dplyr::select(!!xvars) |> scale(), 
-                    afile |> dplyr::select(!!xvars) |> scale(),
-                    k=k, algorithm="brute")
+  # result matrices have same # rows as bfile
+  datob <- FNN::get.knnx(afile |> dplyr::select(all_of(xvars)) |> scale(), # scale to mean=0, sd=1 and compute distances
+                    bfile |> dplyr::select(all_of(xvars)) |> scale(),
+                    k=k, algorithm="brute") # brute is fastest algorithm based on testing
+
   
   return(list(dbtoa=dbtoa, datob=datob))
 }
@@ -55,54 +59,79 @@ get_nodes <- function(afile, bfile){
 
 
 get_arcs <- function(dbtoa, datob, nodes){
+  
+  # maybe look for ways to speed up the pivoting??
+  
   # arcs: all demands, nearest neighbor supply indexes (supply to demand, i.e., b to a)
   # suppress messages because as_tibble is verbose with the neighbor names created by get_knnx
   suppressMessages({
   dbtoa_idx <- tibble::as_tibble(dbtoa$nn.index, .name_repair="unique") |> 
-    dplyr::mutate(brow=row_number()) |> 
-    tidyr::pivot_longer(-brow, names_to = "neighbor", values_to = "arow")
+    dplyr::mutate(arow=row_number()) |> 
+    tidyr::pivot_longer(-arow, names_to = "neighbor", values_to = "brow")
   })
   
   suppressMessages({
   dbtoa_dist <- tibble::as_tibble(dbtoa$nn.dist, .name_repair="unique") |> 
-    dplyr::mutate(brow=row_number()) |> 
-    tidyr::pivot_longer(-brow, names_to = "neighbor", values_to = "dist")
+    dplyr::mutate(arow=row_number()) |> 
+    tidyr::pivot_longer(-arow, names_to = "neighbor", values_to = "dist")
   })
   
-  dbtoa_arcs <- dplyr::left_join(dbtoa_idx, dbtoa_dist, by = join_by(brow, neighbor)) |> 
+  dbtoa_arcs <- dplyr::left_join(dbtoa_idx, dbtoa_dist, by = join_by(arow, neighbor)) |> 
     dplyr::mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
   # dbtoa_arcs
   
   # arcs: all supplies, nearest neighbor demand indexes (a to b)
   suppressMessages({
   datob_idx <- as_tibble(datob$nn.index, .name_repair="unique") |> 
-    dplyr::mutate(arow=row_number()) |> 
-    tidyr::pivot_longer(-arow, names_to = "neighbor", values_to = "brow")
+    dplyr::mutate(brow=row_number()) |> 
+    tidyr::pivot_longer(-brow, names_to = "neighbor", values_to = "arow")
   })
   
   suppressMessages({
   datob_dist <- as_tibble(datob$nn.dist, .name_repair="unique") |> 
-    dplyr::mutate(arow=row_number()) |> 
-    tidyr::pivot_longer(-arow, names_to = "neighbor", values_to = "dist")
+    dplyr::mutate(brow=row_number()) |> 
+    tidyr::pivot_longer(-brow, names_to = "neighbor", values_to = "dist")
   })
   
-  datob_arcs <- left_join(datob_idx, datob_dist, by = join_by(arow, neighbor)) |> 
+  datob_arcs <- left_join(datob_idx, datob_dist, by = join_by(brow, neighbor)) |> 
     dplyr::mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
   # datob_arcs
   
-  # arcs: combine and keep unique arcs
-  arcs1 <- bind_rows(dbtoa_arcs, datob_arcs)
+  # arcs: combine and keep unique arcs, keeping track of their neighbor status
+  arcs1 <- dplyr::bind_rows(
+    dbtoa_arcs |> 
+      dplyr::mutate(src="btoa"), 
+    datob_arcs |> 
+      dplyr::mutate(src="atob")) |> 
+    dplyr::select(arow, brow, neighbor, dist, src)
   
-  arcs1 <- arcs1 |> 
-    dplyr::select(-neighbor) |> 
+  # keeping the neighbor number can help in figuring out the quality of a match
+  # the fastest way I could find to do this is 
+  #   (1) get unique arow, brow arcs and their distances, which by definition are unique
+  #   (2) merge back to get the atob and btoa neighbor numbers; 
+  # note that I waste some memory by creating interim files
+  
+  arcs_distinct <- arcs1 |>
+    dplyr::select(arow, brow, dist) |> 
     dplyr::distinct()
   
-  arcs <- arcs1 |> 
+  arcs_neighbors <- arcs_distinct |>
+    dplyr::left_join(arcs1 |> dplyr::filter(src=="btoa") |> 
+                       dplyr::select(arow, brow, btoa_neighbor=neighbor),
+              by = join_by(arow, brow)) |> 
+    dplyr::left_join(arcs1 |> dplyr::filter(src=="atob") |> 
+                       dplyr::select(arow, brow, atob_neighbor=neighbor),
+              by = join_by(arow, brow)) |> 
+    # prefer btoa_neighbor for later analysis of how far we had to go to find matches
+    dplyr::mutate(neighbor=ifelse(is.na(btoa_neighbor), atob_neighbor, btoa_neighbor)) 
+    
+  # create the final arcs file: bring in node numbers
+  arcs <- arcs_neighbors |> 
     dplyr::left_join(nodes |> dplyr::filter(file=="B") |> dplyr::select(bnode=node, brow=abrow),
                      by = join_by(brow)) |> 
     dplyr::left_join(nodes |> dplyr::filter(file=="A") |> dplyr::select(anode=node, arow=abrow), 
                      by = join_by(arow)) |> 
-    dplyr::select(anode, bnode, arow, brow, dist) |> 
+    dplyr::select(anode, bnode, arow, brow, dist, neighbor, btoa_neighbor, atob_neighbor) |> 
     
     # Convert distances, which are in standard deviation units because of scaling, 
     # to integers because the minimum cost flow algorithms require integer inputs.
@@ -125,7 +154,7 @@ prepab <- function(afile, bfile, idvar, wtvar, xvars, k=NULL){
   awtsum <- sum(afile[[wtvar]])
   bwtsum <- sum(bfile[[wtvar]])
   abratio <- awtsum / bwtsum
-  print(paste0("ratio of sum of afile weights to bfile weights is: ", round(abratio, digits=3)))
+  print(paste0("initial ratio of sum of afile weights to bfile weights is: ", round(abratio, digits=3)))
   print("bfile weights will be adjusted as needed so that bfile weight sum equals afile weight sum")
   if(abratio < 0.75 || abratio > 1.25){
     print("however, large difference in sums suggests caution needed")
@@ -170,7 +199,7 @@ prepab <- function(afile, bfile, idvar, wtvar, xvars, k=NULL){
   dists <- get_distances(afile1, bfile1, xvars, k)
   
   nodes <- get_nodes(afile1, bfile1)
-  arcs <- get_arcs(dists$dbtoa, dists$datob, nodes)
+  arcs <- get_arcs(dbtoa=dists$dbtoa, datob=dists$datob, nodes=nodes)
   
   b <- proc.time()
   preptime <- (b - a)[3]
@@ -197,7 +226,7 @@ get_abfile <- function(arcs, nodes, flows, afile, bfile, idvar, wtvar, xvars, yv
                      by = join_by(brow)) |> 
     
     # convert the a and b id variable names to user-recognizable names
-    dplyr::select(anode, bnode, aid, bid, a_weight, b_weight, dist, weight) |> 
+    dplyr::select(anode, bnode, aid, bid, neighbor, a_weight, b_weight, dist, weight) |> 
     dplyr::rename(!!paste0("a_", idvar):=aid,
                   !!paste0("b_", idvar):=bid) |> 
     
