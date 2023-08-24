@@ -60,42 +60,31 @@ get_nodes <- function(afile, bfile){
 
 get_arcs <- function(dbtoa, datob, nodes){
   
-  # maybe look for ways to speed up the pivoting??
+  # create tibbles for btoa:
+  #   idx has crossing of arow=1:nrow(a), neighbor=1:k indexes, brow=relevant row of b
+  #   dist has crossing of arow=1:nrow(a), neighbor=1:k indexes, dist=relevant distance
+  # create tibble for btoa with arow=1:nrow(a), neighbor=1:k, brow=relevant row or b
   
-  # arcs: all demands, nearest neighbor supply indexes (supply to demand, i.e., b to a)
-  # suppress messages because as_tibble is verbose with the neighbor names created by get_knnx
-  suppressMessages({
-  dbtoa_idx <- tibble::as_tibble(dbtoa$nn.index, .name_repair="unique") |> 
-    dplyr::mutate(arow=row_number()) |> 
-    tidyr::pivot_longer(-arow, names_to = "neighbor", values_to = "brow")
-  })
+  dbtoa_idx <- tibble(arow=rep(1:nrow(dbtoa$nn.index), each=ncol(dbtoa$nn.index)),
+                      neighbor=rep(1:ncol(dbtoa$nn.index), nrow(dbtoa$nn.index)),
+                      brow=c(t(dbtoa$nn.index)))  
   
-  suppressMessages({
-  dbtoa_dist <- tibble::as_tibble(dbtoa$nn.dist, .name_repair="unique") |> 
-    dplyr::mutate(arow=row_number()) |> 
-    tidyr::pivot_longer(-arow, names_to = "neighbor", values_to = "dist")
-  })
-  
-  dbtoa_arcs <- dplyr::left_join(dbtoa_idx, dbtoa_dist, by = join_by(arow, neighbor)) |> 
-    dplyr::mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
+  dbtoa_dist <- tibble(arow=rep(1:nrow(dbtoa$nn.dist), each=ncol(dbtoa$nn.dist)),
+                       neighbor=rep(1:ncol(dbtoa$nn.dist), nrow(dbtoa$nn.dist)),
+                       dist=c(t(dbtoa$nn.dist)))
+
+  dbtoa_arcs <- dplyr::left_join(dbtoa_idx, dbtoa_dist, by = join_by(arow, neighbor))
   # dbtoa_arcs
   
-  # arcs: all supplies, nearest neighbor demand indexes (a to b)
-  suppressMessages({
-  datob_idx <- as_tibble(datob$nn.index, .name_repair="unique") |> 
-    dplyr::mutate(brow=row_number()) |> 
-    tidyr::pivot_longer(-brow, names_to = "neighbor", values_to = "arow")
-  })
+  datob_idx <- tibble(brow=rep(1:nrow(datob$nn.index), each=ncol(datob$nn.index)),
+                      neighbor=rep(1:ncol(datob$nn.index), nrow(datob$nn.index)),
+                      arow=c(t(datob$nn.index)))  
   
-  suppressMessages({
-  datob_dist <- as_tibble(datob$nn.dist, .name_repair="unique") |> 
-    dplyr::mutate(brow=row_number()) |> 
-    tidyr::pivot_longer(-brow, names_to = "neighbor", values_to = "dist")
-  })
+  datob_dist <- tibble(brow=rep(1:nrow(datob$nn.dist), each=ncol(datob$nn.dist)),
+                       neighbor=rep(1:ncol(datob$nn.dist), nrow(datob$nn.dist)),
+                       dist=c(t(datob$nn.dist)))
   
-  datob_arcs <- left_join(datob_idx, datob_dist, by = join_by(brow, neighbor)) |> 
-    dplyr::mutate(neighbor=str_remove_all(neighbor, coll(".")) |> as.integer())
-  # datob_arcs
+  datob_arcs <- dplyr::left_join(datob_idx, datob_dist, by = join_by(brow, neighbor))  
   
   # arcs: combine and keep unique arcs, keeping track of their neighbor status
   arcs1 <- dplyr::bind_rows(
