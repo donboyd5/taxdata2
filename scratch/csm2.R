@@ -148,6 +148,7 @@ nrow(afile); nrow(bfile)
 # this allows each afile record to be matched to up to 100 of its nearest bfile neighbors
 # and the same for each bfile record
 
+
 res <- matchab(afile=afile, 
                bfile=bfile,
                idvar="pid",
